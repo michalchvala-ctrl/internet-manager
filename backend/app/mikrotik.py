@@ -51,9 +51,14 @@ def _connect() -> Any:
     fallback = token if s.mikrotik_plaintext_login else plain
     last_error: Exception | None = None
 
-    for method in (preferred, fallback):
+    for method in (preferred,):
         try:
             return connect(**base, login_method=method)
+        except TrapError as exc:
+            # Auth error – second method rarely helps; fail fast
+            if "password" in str(exc).lower() or "user" in str(exc).lower():
+                raise
+            last_error = exc
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             logger.warning(
@@ -64,6 +69,20 @@ def _connect() -> Any:
                 getattr(method, "__name__", method),
                 exc,
             )
+
+    # One fallback login method if preferred failed non-auth
+    try:
+        return connect(**base, login_method=fallback)
+    except Exception as exc:  # noqa: BLE001
+        last_error = exc
+        logger.warning(
+            "MikroTik login failed host=%s port=%s user=%s method=%s err=%s",
+            host,
+            port,
+            username,
+            getattr(fallback, "__name__", fallback),
+            exc,
+        )
 
     assert last_error is not None
     raise last_error
@@ -106,14 +125,21 @@ def ping() -> tuple[bool, str | None]:
 
 def _find_list_entries(api: Any, list_name: str, address: str | None = None) -> list[dict]:
     path = api.path("/ip/firewall/address-list")
-    entries = []
-    for row in path:
-        if row.get("list") != list_name:
-            continue
-        if address is not None and str(row.get("address", "")).upper() != address.upper():
-            continue
-        entries.append(dict(row))
-    return entries
+    try:
+        query = path.select(".id", "list", "address").where(list=list_name)
+        if address is not None:
+            query = query.where(address=address)
+        return [dict(row) for row in query]
+    except Exception:  # noqa: BLE001
+        # Fallback for older RouterOS / librouteros without where()
+        entries = []
+        for row in path:
+            if row.get("list") != list_name:
+                continue
+            if address is not None and str(row.get("address", "")).upper() != address.upper():
+                continue
+            entries.append(dict(row))
+        return entries
 
 
 def is_mac_in_list(list_name: str, mac: str) -> bool:

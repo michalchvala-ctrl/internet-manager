@@ -50,7 +50,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(path, { ...options, headers });
+  let res: Response;
+  try {
+    res = await fetch(path, { ...options, headers });
+  } catch {
+    throw new Error("Sieťová chyba – skús to znova (alebo otvor appku cez LAN IP Unraidu).");
+  }
+
   if (res.status === 204) return undefined as T;
 
   const text = await res.text();
@@ -59,15 +65,22 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     try {
       data = JSON.parse(text);
     } catch {
-      data = { detail: text };
+      data = null;
     }
   }
 
   if (!res.ok) {
+    if (res.status === 502 || res.status === 504) {
+      throw new Error(
+        "Server nestihl odpovedať (502). Skús cez LAN: http://192.168.1.10:8624 alebo skontroluj Cloudflare timeout.",
+      );
+    }
     const detail =
       typeof data === "object" && data && "detail" in data
         ? String((data as { detail: unknown }).detail)
-        : `Chyba ${res.status}`;
+        : text.trim().startsWith("<")
+          ? `Chyba ${res.status} od proxy`
+          : text.trim().slice(0, 200) || `Chyba ${res.status}`;
     throw new Error(detail);
   }
   return data as T;

@@ -9,6 +9,7 @@ from typing import Any, Iterator
 
 from librouteros import connect
 from librouteros.exceptions import TrapError
+from librouteros.login import plain, token
 
 from app.config import get_settings
 
@@ -26,25 +27,54 @@ def normalize_mac(mac: str) -> str:
 
 def is_configured() -> bool:
     s = get_settings()
-    return bool(s.mikrotik_host and s.mikrotik_user)
+    return bool(s.mikrotik_host.strip() and s.mikrotik_user.strip())
+
+
+def _connect() -> Any:
+    s = get_settings()
+    host = s.mikrotik_host.strip()
+    username = s.mikrotik_user.strip()
+    password = s.mikrotik_password  # don't strip middle; only edges
+    password = password.strip() if password else ""
+    port = s.mikrotik_port
+
+    base: dict[str, Any] = {
+        "host": host,
+        "username": username,
+        "password": password,
+        "port": port,
+        "timeout": 10,
+    }
+
+    # RouterOS 6.43+ = plain; staršie = token. Skús podľa nastavenia, potom fallback.
+    preferred = plain if s.mikrotik_plaintext_login else token
+    fallback = token if s.mikrotik_plaintext_login else plain
+    last_error: Exception | None = None
+
+    for method in (preferred, fallback):
+        try:
+            return connect(**base, login_method=method)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.warning(
+                "MikroTik login failed host=%s port=%s user=%s method=%s err=%s",
+                host,
+                port,
+                username,
+                getattr(method, "__name__", method),
+                exc,
+            )
+
+    assert last_error is not None
+    raise last_error
 
 
 @contextmanager
 def mikrotik_api() -> Iterator[Any]:
-    s = get_settings()
     if not is_configured():
         raise RuntimeError("MikroTik nie je nakonfigurovaný (MIKROTIK_HOST / USER / PASSWORD)")
 
-    kwargs: dict[str, Any] = {
-        "host": s.mikrotik_host,
-        "username": s.mikrotik_user,
-        "password": s.mikrotik_password,
-        "port": s.mikrotik_port,
-    }
-    if s.mikrotik_plaintext_login:
-        kwargs["plaintext_login"] = True
-
-    api = connect(**kwargs)
+    api = _connect()
     try:
         yield api
     finally:
@@ -57,6 +87,9 @@ def mikrotik_api() -> Iterator[Any]:
 def ping() -> tuple[bool, str | None]:
     if not is_configured():
         return False, "Nie je nakonfigurovaný"
+    s = get_settings()
+    user = s.mikrotik_user.strip()
+    host = s.mikrotik_host.strip()
     try:
         with mikrotik_api() as api:
             identity = list(api.path("/system/identity").select("name"))
@@ -64,7 +97,11 @@ def ping() -> tuple[bool, str | None]:
             return True, f"OK ({name})"
     except Exception as exc:  # noqa: BLE001
         logger.exception("MikroTik ping failed")
-        return False, str(exc)
+        pwd_len = len(s.mikrotik_password.strip()) if s.mikrotik_password else 0
+        return (
+            False,
+            f"{exc} | skúšam {user}@{host}:{s.mikrotik_port} (heslo dĺžka {pwd_len})",
+        )
 
 
 def _find_list_entries(api: Any, list_name: str, address: str | None = None) -> list[dict]:
@@ -101,7 +138,6 @@ def set_internet_blocked(list_name: str, mac: str, blocked: bool) -> None:
             try:
                 path.add(list=list_name, address=mac, comment=f"internet-manager:{list_name}")
             except TrapError as exc:
-                # already exists race
                 if "already have" not in str(exc).lower():
                     raise
         else:

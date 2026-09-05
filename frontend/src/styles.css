@@ -432,6 +432,122 @@ a {
   background: rgba(0, 0, 0, 0.16);
 }
 
+.traffic-live {
+  margin-top: 4px;
+}
+
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.preset-btn {
+  border: 1px solid rgba(61, 186, 122, 0.35);
+  background: var(--ok-dim);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.preset-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.week-cal {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.week-col {
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.18);
+  min-height: 110px;
+  overflow: hidden;
+}
+
+.week-col.today {
+  border-color: rgba(100, 160, 255, 0.45);
+}
+
+.week-col.selected {
+  border-color: rgba(61, 186, 122, 0.5);
+  background: rgba(61, 186, 122, 0.08);
+}
+
+.week-col.focus {
+  box-shadow: inset 0 0 0 1px rgba(61, 186, 122, 0.35);
+}
+
+.week-col-head {
+  width: 100%;
+  border: none;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 6px 2px;
+  cursor: pointer;
+}
+
+.week-col.today .week-col-head {
+  color: #9ec1ff;
+}
+
+.week-col-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 4px 8px;
+}
+
+.week-empty {
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-align: center;
+  opacity: 0.5;
+}
+
+.sched-chip {
+  display: grid;
+  gap: 1px;
+  border: none;
+  border-radius: 8px;
+  padding: 5px 4px;
+  font: inherit;
+  font-size: 0.62rem;
+  line-height: 1.15;
+  cursor: pointer;
+  text-align: center;
+  color: #fff;
+  background: #3a4a56;
+}
+
+.sched-chip.act-inet-on,
+.sched-chip.act-soc-on {
+  background: rgba(61, 186, 122, 0.55);
+}
+
+.sched-chip.act-inet-off,
+.sched-chip.act-soc-off {
+  background: rgba(232, 93, 93, 0.55);
+}
+
+.sched-chip.act-soc-slow {
+  background: rgba(230, 168, 54, 0.55);
+}
+
 .schedule-list {
   list-style: none;
   margin: 0 0 12px;
@@ -500,6 +616,15 @@ a {
 
   .schedule-row {
     grid-template-columns: 1fr;
+  }
+
+  .week-cal {
+    gap: 3px;
+  }
+
+  .sched-chip {
+    font-size: 0.56rem;
+    padding: 4px 2px;
   }
 }
 

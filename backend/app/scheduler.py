@@ -85,11 +85,12 @@ def _sync_traffic() -> None:
         if not devices:
             return
         for d in devices:
-            if not d.mikrotik_queue_id:
-                try:
-                    d.mikrotik_queue_id = mikrotik.ensure_traffic_accounting(d.mac)
-                except Exception:  # noqa: BLE001
-                    logger.warning("Traffic queue ensure failed for %s", d.mac, exc_info=True)
+            try:
+                d.mikrotik_queue_id = mikrotik.ensure_traffic_accounting(
+                    d.mac, d.mikrotik_queue_id
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("Traffic queue ensure failed for %s", d.mac, exc_info=True)
         db.commit()
         traffic = mikrotik.get_traffic_by_mac([d.mac for d in devices])
         traffic_svc.sync_devices_traffic(db, devices, traffic)

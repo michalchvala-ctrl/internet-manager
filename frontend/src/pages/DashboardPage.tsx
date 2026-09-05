@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
   type Device,
@@ -18,13 +18,13 @@ const CATEGORY_LABEL: Record<string, string> = {
 };
 
 const DAY_LABELS = [
-  { id: "0", short: "Po" },
-  { id: "1", short: "Ut" },
-  { id: "2", short: "St" },
-  { id: "3", short: "Št" },
-  { id: "4", short: "Pi" },
-  { id: "5", short: "So" },
-  { id: "6", short: "Ne" },
+  { id: "0", short: "Po", full: "Pondelok" },
+  { id: "1", short: "Ut", full: "Utorok" },
+  { id: "2", short: "St", full: "Streda" },
+  { id: "3", short: "Št", full: "Štvrtok" },
+  { id: "4", short: "Pi", full: "Piatok" },
+  { id: "5", short: "So", full: "Sobota" },
+  { id: "6", short: "Ne", full: "Nedeľa" },
 ];
 
 const ACTION_LABEL: Record<string, string> = {
@@ -34,6 +34,54 @@ const ACTION_LABEL: Record<string, string> = {
   social_slow: "Sociálne SLOW",
   social_off: "Sociálne OFF",
 };
+
+const ACTION_SHORT: Record<string, string> = {
+  internet_on: "Net ON",
+  internet_off: "Net OFF",
+  social_on: "Soc ON",
+  social_slow: "SLOW",
+  social_off: "Soc OFF",
+};
+
+const ACTION_CLASS: Record<string, string> = {
+  internet_on: "act-inet-on",
+  internet_off: "act-inet-off",
+  social_on: "act-soc-on",
+  social_slow: "act-soc-slow",
+  social_off: "act-soc-off",
+};
+
+type Preset = {
+  id: string;
+  label: string;
+  hint: string;
+  rules: { days: string; time: string; action: ScheduleAction }[];
+};
+
+const PRESETS: Preset[] = [
+  {
+    id: "school-evening",
+    label: "Večer Po–Pi",
+    hint: "20:00 sociálne OFF · 21:00 internet OFF · 07:00 všetko ON",
+    rules: [
+      { days: "0,1,2,3,4", time: "20:00", action: "social_off" },
+      { days: "0,1,2,3,4", time: "21:00", action: "internet_off" },
+      { days: "0,1,2,3,4", time: "07:00", action: "internet_on" },
+      { days: "0,1,2,3,4", time: "07:00", action: "social_on" },
+    ],
+  },
+  {
+    id: "weekend",
+    label: "Víkend",
+    hint: "So–Ne 21:00 sociálne OFF · 22:00 internet OFF · 09:00 ON",
+    rules: [
+      { days: "5,6", time: "21:00", action: "social_off" },
+      { days: "5,6", time: "22:00", action: "internet_off" },
+      { days: "5,6", time: "09:00", action: "internet_on" },
+      { days: "5,6", time: "09:00", action: "social_on" },
+    ],
+  },
+];
 
 function formatBytes(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return "—";
@@ -66,13 +114,15 @@ function socialModeOf(device: Device): SocialMode {
   return "on";
 }
 
-function formatDays(days: string): string {
-  const set = new Set(days.split(",").map((d) => d.trim()).filter(Boolean));
-  if (set.size === 7) return "Každý deň";
-  if (["0", "1", "2", "3", "4"].every((d) => set.has(d)) && set.size === 5) return "Po–Pi";
-  return DAY_LABELS.filter((d) => set.has(d.id))
-    .map((d) => d.short)
-    .join(" ");
+function rulesForDay(rules: ScheduleRule[], dayId: string): ScheduleRule[] {
+  return rules
+    .filter((r) =>
+      r.days
+        .split(",")
+        .map((d) => d.trim())
+        .includes(dayId),
+    )
+    .sort((a, b) => a.time.localeCompare(b.time));
 }
 
 function Switch({
@@ -120,11 +170,12 @@ export function DashboardPage() {
   const [schedLoading, setSchedLoading] = useState<number | null>(null);
   const [newTime, setNewTime] = useState("20:00");
   const [newAction, setNewAction] = useState<ScheduleAction>("social_off");
-  const [newDays, setNewDays] = useState<string[]>(["0", "1", "2", "3", "4", "5", "6"]);
+  const [newDays, setNewDays] = useState<string[]>(["0", "1", "2", "3", "4"]);
+  const [focusDay, setFocusDay] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
     setToast(msg);
-    window.setTimeout(() => setToast(null), 3200);
+    window.setTimeout(() => setToast(null), 3600);
   };
 
   const load = useCallback(async (opts?: { quiet?: boolean }) => {
@@ -143,6 +194,8 @@ export function DashboardPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const todayWeekday = useMemo(() => String(new Date().getDay() === 0 ? 6 : new Date().getDay() - 1), []);
 
   async function openHistory(deviceId: number) {
     if (historyOpen === deviceId) {
@@ -168,6 +221,7 @@ export function DashboardPage() {
       return;
     }
     setSchedOpen(deviceId);
+    setFocusDay(null);
     setSchedLoading(deviceId);
     try {
       const rows = await api.schedules(deviceId);
@@ -181,25 +235,52 @@ export function DashboardPage() {
 
   async function addSchedule(deviceId: number) {
     if (newDays.length === 0) {
-      showToast("Vyber aspoň jeden deň");
+      showToast("Vyber aspoň jeden deň v kalendári");
       return;
     }
     const key = `${deviceId}-sched-add`;
     setBusyId(key);
     try {
       const rule = await api.createSchedule(deviceId, {
-        days: newDays.join(","),
+        days: [...newDays].sort().join(","),
         time: newTime,
         action: newAction,
         enabled: true,
       });
       setSchedules((prev) => ({
         ...prev,
-        [deviceId]: [...(prev[deviceId] ?? []), rule].sort((a, b) =>
+        [deviceId]: [...(prev[deviceId] ?? []), rule].sort((a, b) => a.time.localeCompare(b.time)),
+      }));
+      showToast("Uložené – beží v Dockeri aj bez appky");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Chyba");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function applyPreset(deviceId: number, preset: Preset) {
+    const key = `${deviceId}-preset`;
+    setBusyId(key);
+    try {
+      const created: ScheduleRule[] = [];
+      for (const r of preset.rules) {
+        created.push(
+          await api.createSchedule(deviceId, {
+            days: r.days,
+            time: r.time,
+            action: r.action,
+            enabled: true,
+          }),
+        );
+      }
+      setSchedules((prev) => ({
+        ...prev,
+        [deviceId]: [...(prev[deviceId] ?? []), ...created].sort((a, b) =>
           a.time.localeCompare(b.time),
         ),
       }));
-      showToast("Rozvrh uložený – beží na pozadí v Dockeri");
+      showToast(`Preset „${preset.label}“ pridaný`);
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Chyba");
     } finally {
@@ -328,7 +409,7 @@ export function DashboardPage() {
             href={status.mikrotik_webfig_url}
             target="_blank"
             rel="noreferrer"
-            title="Grafy queue v Winbox/WebFig (Tools → Graphing)"
+            title="Tools → Graphing → Queue"
           >
             MikroTik grafy
           </a>
@@ -366,6 +447,11 @@ export function DashboardPage() {
             const sinceSoc = formatSince(device.social_blocked_since);
             const inetBusy = busyId === `${device.id}-inet`;
             const socBusy = busyId === `${device.id}-soc`;
+            const liveDown = device.traffic_download_bytes ?? 0;
+            const liveUp = device.traffic_upload_bytes ?? 0;
+            const liveTotal = liveDown + liveUp;
+            const todayDown = device.traffic_today_download_bytes ?? 0;
+            const todayUp = device.traffic_today_upload_bytes ?? 0;
             return (
               <article
                 key={device.id}
@@ -381,8 +467,7 @@ export function DashboardPage() {
                         className="traffic-today"
                         title="Od polnoci (Europe/Bratislava) doteraz"
                       >
-                        Dnes ↓ {formatBytes(device.traffic_today_download_bytes)} · ↑{" "}
-                        {formatBytes(device.traffic_today_upload_bytes)}
+                        Dnes ↓ {formatBytes(todayDown)} · ↑ {formatBytes(todayUp)}
                       </span>
                       <button
                         type="button"
@@ -398,6 +483,12 @@ export function DashboardPage() {
                       >
                         {schedOpen === device.id ? "Skryť čas" : "Rozvrh"}
                       </button>
+                    </div>
+                    <div className="device-meta traffic-live" title="Živé počítadlo MikroTik queue">
+                      MikroTik queue Σ {formatBytes(liveTotal)}
+                      {liveTotal === 0
+                        ? " · ešte 0 – po update otvor stránku a chvíľu používaj net"
+                        : ""}
                     </div>
                     {historyOpen === device.id && (
                       <div className="traffic-history">
@@ -426,44 +517,127 @@ export function DashboardPage() {
                           </table>
                         )}
                         <div className="device-meta" style={{ marginTop: 8 }}>
-                          Denne od polnoci do polnoci (Bratislava). „Dnes“ = od polnoci
-                          doteraz. Graf v Winboxe: Tools → Graphing → Queue.
+                          Appka si sama vytvorí mangle + queue podľa MAC. Vo Winboxe:
+                          IP → Firewall → Mangle (`internet-manager-traffic:…`) a Queues →
+                          Simple (`im-traffic-…`). Fasttrack musí mať connection-mark=no-mark
+                          (appka to nastaví).
                         </div>
                       </div>
                     )}
                     {schedOpen === device.id && (
                       <div className="schedule-panel">
-                        <div className="device-meta" style={{ marginBottom: 8 }}>
-                          Beží na pozadí v kontajneri ({status?.timezone ?? "Europe/Bratislava"}) –
-                          appka nemusí byť otvorená.
+                        <div className="device-meta" style={{ marginBottom: 10 }}>
+                          Týždenný rozvrh · {status?.timezone ?? "Europe/Bratislava"} · beží v
+                          Dockeri bez appky
                         </div>
+
+                        <div className="preset-row">
+                          {PRESETS.map((p) => (
+                            <button
+                              key={p.id}
+                              type="button"
+                              className="preset-btn"
+                              title={p.hint}
+                              disabled={busyId === `${device.id}-preset`}
+                              onClick={() => void applyPreset(device.id, p)}
+                            >
+                              {p.label}
+                            </button>
+                          ))}
+                        </div>
+
                         {schedLoading === device.id ? (
                           <div className="device-meta">Načítavam…</div>
                         ) : (
-                          <ul className="schedule-list">
-                            {(schedules[device.id] ?? []).map((rule) => (
-                              <li key={rule.id}>
-                                <span>
-                                  <strong>{rule.time}</strong> · {formatDays(rule.days)} ·{" "}
-                                  {ACTION_LABEL[rule.action] ?? rule.action}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="traffic-reset"
-                                  disabled={busyId === `${device.id}-sched-${rule.id}`}
-                                  onClick={() => void removeSchedule(device.id, rule.id)}
+                          <div className="week-cal" role="grid" aria-label="Týždenný rozvrh">
+                            {DAY_LABELS.map((d) => {
+                              const dayRules = rulesForDay(schedules[device.id] ?? [], d.id);
+                              const selected = newDays.includes(d.id);
+                              const isToday = d.id === todayWeekday;
+                              return (
+                                <div
+                                  key={d.id}
+                                  className={`week-col${selected ? " selected" : ""}${
+                                    isToday ? " today" : ""
+                                  }${focusDay === d.id ? " focus" : ""}`}
                                 >
-                                  Zmazať
-                                </button>
-                              </li>
-                            ))}
-                            {(schedules[device.id] ?? []).length === 0 && (
-                              <li className="device-meta">Zatiaľ žiadne pravidlá</li>
-                            )}
-                          </ul>
+                                  <button
+                                    type="button"
+                                    className="week-col-head"
+                                    onClick={() => {
+                                      setFocusDay(d.id);
+                                      setNewDays((prev) =>
+                                        prev.length === 1 && prev[0] === d.id
+                                          ? prev
+                                          : [d.id],
+                                      );
+                                    }}
+                                    onDoubleClick={() =>
+                                      setNewDays((prev) =>
+                                        prev.includes(d.id)
+                                          ? prev.filter((x) => x !== d.id)
+                                          : [...prev, d.id],
+                                      )
+                                    }
+                                    title="Klik = tento deň · Dvojklik = pridať/odoberať zo výberu"
+                                  >
+                                    {d.short}
+                                  </button>
+                                  <div className="week-col-body">
+                                    {dayRules.map((rule) => (
+                                      <button
+                                        key={`${rule.id}-${d.id}`}
+                                        type="button"
+                                        className={`sched-chip ${ACTION_CLASS[rule.action] ?? ""}`}
+                                        title={`${ACTION_LABEL[rule.action]} · ťukni = zmazať`}
+                                        disabled={busyId === `${device.id}-sched-${rule.id}`}
+                                        onClick={() => {
+                                          if (
+                                            window.confirm(
+                                              `Zmazať ${rule.time} ${ACTION_LABEL[rule.action]}?`,
+                                            )
+                                          ) {
+                                            void removeSchedule(device.id, rule.id);
+                                          }
+                                        }}
+                                      >
+                                        <span>{rule.time}</span>
+                                        <span>{ACTION_SHORT[rule.action] ?? rule.action}</span>
+                                      </button>
+                                    ))}
+                                    {dayRules.length === 0 && (
+                                      <span className="week-empty">—</span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         )}
+
                         <div className="schedule-form">
                           <div className="day-picks">
+                            <button
+                              type="button"
+                              className="day-chip"
+                              onClick={() => setNewDays(["0", "1", "2", "3", "4"])}
+                            >
+                              Po–Pi
+                            </button>
+                            <button
+                              type="button"
+                              className="day-chip"
+                              onClick={() => setNewDays(["5", "6"])}
+                            >
+                              So–Ne
+                            </button>
+                            <button
+                              type="button"
+                              className="day-chip"
+                              onClick={() => setNewDays(["0", "1", "2", "3", "4", "5", "6"])}
+                            >
+                              Každý deň
+                            </button>
                             {DAY_LABELS.map((d) => (
                               <button
                                 key={d.id}
@@ -505,6 +679,10 @@ export function DashboardPage() {
                             >
                               Pridať
                             </button>
+                          </div>
+                          <div className="device-meta">
+                            Tip: preset „Večer Po–Pi“ = sociálne 20:00 OFF, internet 21:00 OFF,
+                            ráno 07:00 ON.
                           </div>
                         </div>
                       </div>

@@ -123,12 +123,11 @@ def list_devices(
     if mikrotik.is_configured() and devices:
         try:
             for d in devices:
-                if not d.mikrotik_queue_id:
-                    try:
-                        qid = mikrotik.ensure_traffic_accounting(d.mac, d.mikrotik_queue_id)
-                        d.mikrotik_queue_id = qid
-                    except Exception:  # noqa: BLE001
-                        pass
+                try:
+                    qid = mikrotik.ensure_traffic_accounting(d.mac, d.mikrotik_queue_id)
+                    d.mikrotik_queue_id = qid
+                except Exception:  # noqa: BLE001
+                    pass
             db.commit()
             traffic = mikrotik.get_traffic_by_mac([d.mac for d in devices])
             today_map = traffic_svc.sync_devices_traffic(db, devices, traffic)

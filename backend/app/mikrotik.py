@@ -383,6 +383,7 @@ def _ensure_fasttrack_skips_marked(api: Any) -> None:
 def ensure_traffic_accounting(mac: str, existing_queue_id: str | None = None) -> str:
     """
     Create mangle marks + simple queue for per-MAC upload/download counters.
+    Marks both src-mac and dst-mac so download+upload count.
     Returns queue .id.
     """
     mac = normalize_mac(mac)
@@ -394,39 +395,88 @@ def ensure_traffic_accounting(mac: str, existing_queue_id: str | None = None) ->
         mangle = api.path("/ip/firewall/mangle")
         queues = api.path("/queue/simple")
 
-        has_conn = False
-        has_pkt = False
-        for row in mangle:
-            if row.get("comment") == comment and row.get("action") == "mark-connection":
-                has_conn = True
-            if row.get("comment") == comment and row.get("action") == "mark-packet":
-                has_pkt = True
+        wanted_rules = [
+            # connection marks both directions
+            {
+                "action": "mark-connection",
+                "key": "src-conn",
+                "params": {
+                    "new-connection-mark": mark,
+                    "src-mac-address": mac,
+                    "passthrough": "yes",
+                },
+            },
+            {
+                "action": "mark-connection",
+                "key": "dst-conn",
+                "params": {
+                    "new-connection-mark": mark,
+                    "dst-mac-address": mac,
+                    "passthrough": "yes",
+                },
+            },
+            # packet marks from connection + direct MAC (HW/fast-path edge cases)
+            {
+                "action": "mark-packet",
+                "key": "conn-pkt",
+                "params": {
+                    "new-packet-mark": mark,
+                    "connection-mark": mark,
+                    "passthrough": "yes",
+                },
+            },
+            {
+                "action": "mark-packet",
+                "key": "src-pkt",
+                "params": {
+                    "new-packet-mark": mark,
+                    "src-mac-address": mac,
+                    "passthrough": "yes",
+                },
+            },
+            {
+                "action": "mark-packet",
+                "key": "dst-pkt",
+                "params": {
+                    "new-packet-mark": mark,
+                    "dst-mac-address": mac,
+                    "passthrough": "yes",
+                },
+            },
+        ]
 
-        if not has_conn:
+        existing_comments = [
+            str(row.get("comment") or "")
+            for row in mangle
+            if str(row.get("comment") or "").startswith(comment)
+        ]
+        # Remove old incomplete set (comment exactly == comment without suffix) then recreate full set
+        legacy = [row for row in list(mangle) if row.get("comment") == comment]
+        if legacy and not any(c.startswith(f"{comment}|") for c in existing_comments):
+            for row in legacy:
+                try:
+                    mangle.remove(row[".id"])
+                except TrapError:
+                    pass
+
+        present = {
+            str(row.get("comment") or "")
+            for row in mangle
+            if str(row.get("comment") or "").startswith(comment)
+        }
+        for spec in wanted_rules:
+            tagged = f"{comment}|{spec['key']}"
+            if tagged in present:
+                continue
             try:
                 mangle.add(
                     chain="forward",
-                    action="mark-connection",
-                    **{"new-connection-mark": mark, "src-mac-address": mac, "passthrough": "yes"},
-                    comment=comment,
+                    action=spec["action"],
+                    comment=tagged,
+                    **spec["params"],
                 )
             except TrapError as exc:
-                logger.warning("mangle mark-connection failed: %s", exc)
-
-        if not has_pkt:
-            try:
-                mangle.add(
-                    chain="forward",
-                    action="mark-packet",
-                    **{
-                        "new-packet-mark": mark,
-                        "connection-mark": mark,
-                        "passthrough": "yes",
-                    },
-                    comment=comment,
-                )
-            except TrapError as exc:
-                logger.warning("mangle mark-packet failed: %s", exc)
+                logger.warning("mangle %s failed for %s: %s", spec["key"], mac, exc)
 
         queue_id = existing_queue_id
         if queue_id:
@@ -453,7 +503,6 @@ def ensure_traffic_accounting(mac: str, existing_queue_id: str | None = None) ->
                     comment=comment,
                 )
             except TrapError:
-                # older ROS may require target
                 ret = queues.add(
                     name=f"im-traffic-{mark}"[:60],
                     **{"packet-marks": mark},
@@ -473,7 +522,6 @@ def ensure_traffic_accounting(mac: str, existing_queue_id: str | None = None) ->
                 raise RuntimeError("Traffic queue sa nepodarilo vytvoriť")
             logger.info("Created traffic queue %s for %s", queue_id, mac)
 
-        # Enable Winbox/WebFig graphs for this queue
         qname = f"im-traffic-{mark}"[:60]
         for row in queues:
             if row.get(".id") == queue_id and row.get("name"):
@@ -494,7 +542,7 @@ def _parse_queue_bytes(raw: Any) -> tuple[int, int]:
     """
     if raw is None:
         return 0, 0
-    text = str(raw)
+    text = str(raw).strip()
     if "/" in text:
         left, right = text.split("/", 1)
         try:
@@ -507,6 +555,20 @@ def _parse_queue_bytes(raw: Any) -> tuple[int, int]:
         return 0, 0
 
 
+def _queue_stat_rows(api: Any) -> list[dict[str, Any]]:
+    """RouterOS often hides counters unless print includes stats."""
+    try:
+        rows = list(api("/queue/simple/print", **{"stats": ""}))
+        if rows:
+            return rows
+    except Exception:  # noqa: BLE001
+        logger.debug("queue print stats failed", exc_info=True)
+    try:
+        return list(api.path("/queue/simple"))
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def get_traffic_by_mac(macs: list[str]) -> dict[str, dict[str, int]]:
     """
     Returns {MAC: {upload_bytes, download_bytes}} for known accounting queues.
@@ -517,22 +579,19 @@ def get_traffic_by_mac(macs: list[str]) -> dict[str, dict[str, int]]:
         return out
 
     with mikrotik_api() as api:
-        for row in api.path("/queue/simple"):
+        for row in _queue_stat_rows(api):
             comment = str(row.get("comment") or "")
             if not comment.startswith("internet-manager-traffic:"):
                 continue
-            mac = comment.split(":", 1)[-1].upper()
-            # comment format internet-manager-traffic:AA:BB:...
-            mac = comment.replace("internet-manager-traffic:", "", 1).upper()
+            # comment may be plain or with |suffix from older code — only plain on queues
+            mac = comment.replace("internet-manager-traffic:", "", 1).split("|", 1)[0].upper()
             if mac not in wanted:
                 continue
-            # Prefer dedicated stats print fields when present
             upload, download = _parse_queue_bytes(row.get("bytes"))
-            if "bytes" not in row:
-                # some ROS expose separately
+            if upload == 0 and download == 0:
                 try:
-                    upload = int(row.get("uploaded") or row.get("bytes-out") or upload)
-                    download = int(row.get("downloaded") or row.get("bytes-in") or download)
+                    upload = int(row.get("uploaded") or row.get("bytes-out") or 0)
+                    download = int(row.get("downloaded") or row.get("bytes-in") or 0)
                 except (TypeError, ValueError):
                     pass
             out[mac] = {"upload_bytes": upload, "download_bytes": download}
@@ -564,7 +623,8 @@ def remove_traffic_accounting(mac: str) -> None:
     with mikrotik_api() as api:
         mangle = api.path("/ip/firewall/mangle")
         for row in list(mangle):
-            if row.get("comment") == comment:
+            c = str(row.get("comment") or "")
+            if c == comment or c.startswith(f"{comment}|"):
                 try:
                     mangle.remove(row[".id"])
                 except TrapError:
@@ -576,7 +636,6 @@ def remove_traffic_accounting(mac: str) -> None:
                     queues.remove(row[".id"])
                 except TrapError:
                     pass
-        # graphing entries referencing removed queues are cleaned by ROS eventually
 
 
 SOCIAL_TLS_HOSTS = [

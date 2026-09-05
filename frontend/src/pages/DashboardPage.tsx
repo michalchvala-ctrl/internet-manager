@@ -24,23 +24,29 @@ function formatSince(iso: string | null): string | null {
 function Switch({
   checked,
   disabled,
+  pending,
   onChange,
   label,
 }: {
   checked: boolean;
   disabled?: boolean;
+  pending?: boolean;
   onChange: (next: boolean) => void;
   label: string;
 }) {
   return (
     <button
       type="button"
-      className="switch"
+      className={`switch${pending ? " pending" : ""}`}
       role="switch"
       aria-checked={checked}
+      aria-busy={pending || undefined}
       aria-label={label}
       disabled={disabled}
-      onClick={() => onChange(!checked)}
+      onClick={() => {
+        if (disabled || pending) return;
+        onChange(!checked);
+      }}
     />
   );
 }
@@ -58,8 +64,8 @@ export function DashboardPage() {
     window.setTimeout(() => setToast(null), 3200);
   };
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (opts?: { quiet?: boolean }) => {
+    if (!opts?.quiet) setLoading(true);
     try {
       const [devs, st] = await Promise.all([api.devices(), api.status()]);
       setDevices(devs);
@@ -67,7 +73,7 @@ export function DashboardPage() {
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Načítanie zlyhalo");
     } finally {
-      setLoading(false);
+      if (!opts?.quiet) setLoading(false);
     }
   }, []);
 
@@ -77,11 +83,33 @@ export function DashboardPage() {
 
   async function toggleInternet(device: Device, blocked: boolean) {
     const key = `${device.id}-inet`;
+    if (busyId) return;
     setBusyId(key);
+
+    // Optimistic UI – mobile musí vidieť zmenu hneď
+    const prev = device;
+    setDevices((list) =>
+      list.map((d) =>
+        d.id === device.id
+          ? {
+              ...d,
+              internet_blocked: blocked,
+              internet_blocked_since: blocked ? new Date().toISOString() : null,
+            }
+          : d,
+      ),
+    );
+
     try {
       const updated = await api.toggleInternet(device.id, blocked);
-      setDevices((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+      setDevices((list) => list.map((d) => (d.id === updated.id ? { ...d, ...updated } : d)));
     } catch (err) {
+      // Sync zo servera – request mohol stihnúť uložiť stav aj pri timeout chybe
+      try {
+        await load({ quiet: true });
+      } catch {
+        setDevices((list) => list.map((d) => (d.id === prev.id ? prev : d)));
+      }
       showToast(err instanceof Error ? err.message : "Chyba");
     } finally {
       setBusyId(null);
@@ -90,11 +118,31 @@ export function DashboardPage() {
 
   async function toggleSocial(device: Device, blocked: boolean) {
     const key = `${device.id}-soc`;
+    if (busyId) return;
     setBusyId(key);
+
+    const prev = device;
+    setDevices((list) =>
+      list.map((d) =>
+        d.id === device.id
+          ? {
+              ...d,
+              social_blocked: blocked,
+              social_blocked_since: blocked ? new Date().toISOString() : null,
+            }
+          : d,
+      ),
+    );
+
     try {
       const updated = await api.toggleSocial(device.id, blocked);
-      setDevices((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+      setDevices((list) => list.map((d) => (d.id === updated.id ? { ...d, ...updated } : d)));
     } catch (err) {
+      try {
+        await load({ quiet: true });
+      } catch {
+        setDevices((list) => list.map((d) => (d.id === prev.id ? prev : d)));
+      }
       showToast(err instanceof Error ? err.message : "Chyba");
     } finally {
       setBusyId(null);
@@ -167,6 +215,8 @@ export function DashboardPage() {
             const socialOn = !device.social_blocked;
             const sinceInet = formatSince(device.internet_blocked_since);
             const sinceSoc = formatSince(device.social_blocked_since);
+            const inetBusy = busyId === `${device.id}-inet`;
+            const socBusy = busyId === `${device.id}-soc`;
             return (
               <article
                 key={device.id}
@@ -182,40 +232,46 @@ export function DashboardPage() {
                 </div>
 
                 <div className="toggles">
-                  <div className={`toggle-row ${inetOn ? "on" : "off"}`}>
+                  <div className={`toggle-row ${inetOn ? "on" : "off"}${inetBusy ? " busy" : ""}`}>
                     <div className="toggle-label">
                       <strong>Internet {inetOn ? "ON" : "OFF"}</strong>
                       <small>
-                        {inetOn
-                          ? "Plný prístup do internetu"
-                          : sinceInet
-                            ? `Blokované od ${sinceInet}`
-                            : "Internet blokovaný (LAN ostáva)"}
+                        {inetBusy
+                          ? "Ukladám…"
+                          : inetOn
+                            ? "Plný prístup do internetu"
+                            : sinceInet
+                              ? `Blokované od ${sinceInet}`
+                              : "Internet blokovaný (LAN ostáva)"}
                       </small>
                     </div>
                     <Switch
                       checked={inetOn}
                       label={`Internet ${device.name}`}
-                      disabled={busyId === `${device.id}-inet`}
+                      pending={inetBusy}
+                      disabled={Boolean(busyId) && !inetBusy}
                       onChange={(next) => void toggleInternet(device, !next)}
                     />
                   </div>
 
-                  <div className={`toggle-row ${socialOn ? "on" : "off"}`}>
+                  <div className={`toggle-row ${socialOn ? "on" : "off"}${socBusy ? " busy" : ""}`}>
                     <div className="toggle-label">
                       <strong>Sociálne {socialOn ? "ON" : "OFF"}</strong>
                       <small>
-                        {socialOn
-                          ? "TikTok / IG / Snap povolené"
-                          : sinceSoc
-                            ? `Sociálne blokované od ${sinceSoc}`
-                            : "Sociálne siete blokované"}
+                        {socBusy
+                          ? "Ukladám…"
+                          : socialOn
+                            ? "TikTok / IG / Snap povolené"
+                            : sinceSoc
+                              ? `Sociálne blokované od ${sinceSoc}`
+                              : "Sociálne siete blokované"}
                       </small>
                     </div>
                     <Switch
                       checked={socialOn}
                       label={`Sociálne ${device.name}`}
-                      disabled={busyId === `${device.id}-soc`}
+                      pending={socBusy}
+                      disabled={Boolean(busyId) && !socBusy}
                       onChange={(next) => void toggleSocial(device, !next)}
                     />
                   </div>

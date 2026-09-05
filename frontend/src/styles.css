@@ -358,6 +358,25 @@ a {
   cursor: wait;
 }
 
+.switch.pending {
+  opacity: 0.85;
+  cursor: wait;
+}
+
+.switch.pending::after {
+  animation: pulse-knob 0.8s ease infinite;
+}
+
+@keyframes pulse-knob {
+  50% {
+    transform: scale(0.92);
+  }
+}
+
+.toggle-row.busy {
+  opacity: 0.92;
+}
+
 .switch::after {
   content: "";
   position: absolute;

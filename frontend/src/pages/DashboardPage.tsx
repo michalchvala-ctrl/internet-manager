@@ -108,6 +108,7 @@ export function DashboardPage() {
           className={`pill ${
             !status?.mikrotik_configured ? "warn" : status.mikrotik_ok ? "ok" : "bad"
           }`}
+          title={status?.mikrotik_error ?? undefined}
         >
           <span className="dot" />
           MikroTik{" "}
@@ -121,6 +122,7 @@ export function DashboardPage() {
           className={`pill ${
             !status?.adguard_configured ? "warn" : status.adguard_ok ? "ok" : "bad"
           }`}
+          title={status?.adguard_error ?? undefined}
         >
           <span className="dot" />
           AdGuard{" "}
@@ -135,6 +137,21 @@ export function DashboardPage() {
           {user?.username}
         </div>
       </div>
+
+      {(status?.mikrotik_error || status?.adguard_error) && (
+        <div className="error" style={{ marginBottom: 14 }}>
+          {status.mikrotik_error && (
+            <div>
+              <strong>MikroTik:</strong> {status.mikrotik_error}
+            </div>
+          )}
+          {status.adguard_error && (
+            <div style={{ marginTop: status.mikrotik_error ? 6 : 0 }}>
+              <strong>AdGuard:</strong> {status.adguard_error}
+            </div>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <p className="empty">Načítavam zariadenia…</p>

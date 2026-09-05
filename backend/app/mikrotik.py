@@ -351,3 +351,217 @@ def remove_device_rule(rule_id: str | None, list_name: str, mac: str) -> None:
 
 def ensure_firewall_drop_rule(list_name: str) -> str:
     return f"ok:{list_name}"
+
+
+def _traffic_comment(mac: str) -> str:
+    return f"internet-manager-traffic:{normalize_mac(mac)}"
+
+
+def _mark_name(mac: str) -> str:
+    return "im" + normalize_mac(mac).replace(":", "").lower()
+
+
+def _ensure_fasttrack_skips_marked(api: Any) -> None:
+    """
+    Default defconf fasttrack bypasses queues. Limit it to unmarked connections
+    so our per-MAC accounting queues actually count traffic.
+    """
+    path = api.path("/ip/firewall/filter")
+    for row in path:
+        if row.get("action") != "fasttrack-connection":
+            continue
+        if str(row.get("connection-mark") or "") == "no-mark":
+            return
+        try:
+            path.update(**{".id": row[".id"], "connection-mark": "no-mark"})
+            logger.info("Updated fasttrack rule %s to connection-mark=no-mark", row[".id"])
+        except TrapError as exc:
+            logger.warning("Could not update fasttrack for accounting: %s", exc)
+        return
+
+
+def ensure_traffic_accounting(mac: str, existing_queue_id: str | None = None) -> str:
+    """
+    Create mangle marks + simple queue for per-MAC upload/download counters.
+    Returns queue .id.
+    """
+    mac = normalize_mac(mac)
+    comment = _traffic_comment(mac)
+    mark = _mark_name(mac)
+
+    with mikrotik_api() as api:
+        _ensure_fasttrack_skips_marked(api)
+        mangle = api.path("/ip/firewall/mangle")
+        queues = api.path("/queue/simple")
+
+        has_conn = False
+        has_pkt = False
+        for row in mangle:
+            if row.get("comment") == comment and row.get("action") == "mark-connection":
+                has_conn = True
+            if row.get("comment") == comment and row.get("action") == "mark-packet":
+                has_pkt = True
+
+        if not has_conn:
+            try:
+                mangle.add(
+                    chain="forward",
+                    action="mark-connection",
+                    **{"new-connection-mark": mark, "src-mac-address": mac, "passthrough": "yes"},
+                    comment=comment,
+                )
+            except TrapError as exc:
+                logger.warning("mangle mark-connection failed: %s", exc)
+
+        if not has_pkt:
+            try:
+                mangle.add(
+                    chain="forward",
+                    action="mark-packet",
+                    **{
+                        "new-packet-mark": mark,
+                        "connection-mark": mark,
+                        "passthrough": "yes",
+                    },
+                    comment=comment,
+                )
+            except TrapError as exc:
+                logger.warning("mangle mark-packet failed: %s", exc)
+
+        queue_id = existing_queue_id
+        if queue_id:
+            found = False
+            for row in queues:
+                if row.get(".id") == queue_id:
+                    found = True
+                    break
+            if not found:
+                queue_id = None
+
+        if not queue_id:
+            for row in queues:
+                if row.get("comment") == comment or row.get("name") == f"im-traffic-{mark}":
+                    queue_id = row.get(".id")
+                    break
+
+        if not queue_id:
+            try:
+                ret = queues.add(
+                    name=f"im-traffic-{mark}"[:60],
+                    **{"packet-marks": mark},
+                    target="",
+                    comment=comment,
+                )
+            except TrapError:
+                # older ROS may require target
+                ret = queues.add(
+                    name=f"im-traffic-{mark}"[:60],
+                    **{"packet-marks": mark},
+                    target="0.0.0.0/0",
+                    comment=comment,
+                )
+            if isinstance(ret, str):
+                queue_id = ret
+            elif isinstance(ret, dict) and ret.get("ret"):
+                queue_id = str(ret["ret"])
+            else:
+                for row in queues:
+                    if row.get("comment") == comment:
+                        queue_id = row.get(".id")
+                        break
+            if not queue_id:
+                raise RuntimeError("Traffic queue sa nepodarilo vytvoriť")
+            logger.info("Created traffic queue %s for %s", queue_id, mac)
+
+        return queue_id
+
+
+def _parse_queue_bytes(raw: Any) -> tuple[int, int]:
+    """
+    MikroTik simple queue bytes are usually 'upload/download'.
+    Upload = from client, download = to client.
+    """
+    if raw is None:
+        return 0, 0
+    text = str(raw)
+    if "/" in text:
+        left, right = text.split("/", 1)
+        try:
+            return int(left), int(right)
+        except ValueError:
+            return 0, 0
+    try:
+        return 0, int(text)
+    except ValueError:
+        return 0, 0
+
+
+def get_traffic_by_mac(macs: list[str]) -> dict[str, dict[str, int]]:
+    """
+    Returns {MAC: {upload_bytes, download_bytes}} for known accounting queues.
+    """
+    wanted = {normalize_mac(m) for m in macs}
+    out: dict[str, dict[str, int]] = {m: {"upload_bytes": 0, "download_bytes": 0} for m in wanted}
+    if not is_configured() or not wanted:
+        return out
+
+    with mikrotik_api() as api:
+        for row in api.path("/queue/simple"):
+            comment = str(row.get("comment") or "")
+            if not comment.startswith("internet-manager-traffic:"):
+                continue
+            mac = comment.split(":", 1)[-1].upper()
+            # comment format internet-manager-traffic:AA:BB:...
+            mac = comment.replace("internet-manager-traffic:", "", 1).upper()
+            if mac not in wanted:
+                continue
+            # Prefer dedicated stats print fields when present
+            upload, download = _parse_queue_bytes(row.get("bytes"))
+            if "bytes" not in row:
+                # some ROS expose separately
+                try:
+                    upload = int(row.get("uploaded") or row.get("bytes-out") or upload)
+                    download = int(row.get("downloaded") or row.get("bytes-in") or download)
+                except (TypeError, ValueError):
+                    pass
+            out[mac] = {"upload_bytes": upload, "download_bytes": download}
+    return out
+
+
+def reset_traffic_counters(mac: str) -> None:
+    mac = normalize_mac(mac)
+    comment = _traffic_comment(mac)
+    with mikrotik_api() as api:
+        queues = api.path("/queue/simple")
+        for row in queues:
+            if row.get("comment") == comment:
+                try:
+                    queues.reset(**{".id": row[".id"]})
+                except Exception:  # noqa: BLE001
+                    try:
+                        api("/queue/simple/reset-counters", **{".id": row[".id"]})
+                    except Exception:  # noqa: BLE001
+                        api("/queue/simple/reset", **{"numbers": row[".id"]})
+                return
+
+
+def remove_traffic_accounting(mac: str) -> None:
+    if not is_configured():
+        return
+    mac = normalize_mac(mac)
+    comment = _traffic_comment(mac)
+    with mikrotik_api() as api:
+        mangle = api.path("/ip/firewall/mangle")
+        for row in list(mangle):
+            if row.get("comment") == comment:
+                try:
+                    mangle.remove(row[".id"])
+                except TrapError:
+                    pass
+        queues = api.path("/queue/simple")
+        for row in list(queues):
+            if row.get("comment") == comment:
+                try:
+                    queues.remove(row[".id"])
+                except TrapError:
+                    pass

@@ -44,6 +44,10 @@ def migrate_db() -> None:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE devices ADD COLUMN mikrotik_filter_id VARCHAR(32)"))
         logger.info("Added column devices.mikrotik_filter_id")
+    if "mikrotik_queue_id" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN mikrotik_queue_id VARCHAR(32)"))
+        logger.info("Added column devices.mikrotik_queue_id")
 
 
 def seed_db() -> None:

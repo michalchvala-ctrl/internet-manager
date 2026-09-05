@@ -277,6 +277,36 @@ a {
   font-size: 0.82rem;
 }
 
+.traffic-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.traffic-row span {
+  color: var(--muted);
+}
+
+.traffic-reset {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.traffic-reset:disabled {
+  opacity: 0.5;
+}
+
 .cat {
   font-size: 0.72rem;
   text-transform: uppercase;

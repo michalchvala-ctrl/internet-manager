@@ -9,6 +9,19 @@ const CATEGORY_LABEL: Record<string, string> = {
   other: "Iné",
 };
 
+function formatBytes(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n)) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = Math.max(0, n);
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  const digits = i === 0 ? 0 : i >= 3 ? 2 : 1;
+  return `${v.toFixed(digits)} ${units[i]}`;
+}
+
 function formatSince(iso: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso.endsWith("Z") ? iso : `${iso}Z`);
@@ -227,6 +240,32 @@ export function DashboardPage() {
                   <div>
                     <h2>{device.name}</h2>
                     <div className="device-meta">{device.mac}</div>
+                    <div className="traffic-row">
+                      <span title="Download">↓ {formatBytes(device.traffic_download_bytes)}</span>
+                      <span title="Upload">↑ {formatBytes(device.traffic_upload_bytes)}</span>
+                      <button
+                        type="button"
+                        className="traffic-reset"
+                        disabled={busyId === `${device.id}-traf`}
+                        onClick={() => {
+                          const key = `${device.id}-traf`;
+                          setBusyId(key);
+                          void api
+                            .resetTraffic(device.id)
+                            .then((updated) => {
+                              setDevices((list) =>
+                                list.map((d) => (d.id === updated.id ? { ...d, ...updated } : d)),
+                              );
+                            })
+                            .catch((err) =>
+                              showToast(err instanceof Error ? err.message : "Chyba"),
+                            )
+                            .finally(() => setBusyId(null));
+                        }}
+                      >
+                        Reset
+                      </button>
+                    </div>
                   </div>
                   <span className="cat">{CATEGORY_LABEL[device.category] ?? device.category}</span>
                 </div>

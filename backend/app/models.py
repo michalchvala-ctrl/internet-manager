@@ -42,6 +42,7 @@ class Device(Base):
     internet_blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     social_blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     mikrotik_filter_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    mikrotik_queue_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     owner: Mapped[User | None] = relationship(back_populates="devices")
     viewers: Mapped[list["DeviceAccess"]] = relationship(

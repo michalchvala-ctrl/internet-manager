@@ -70,12 +70,38 @@ def status(_: Annotated[User, Depends(get_current_user)]) -> StatusOut:
     )
 
 
+def _device_out(device: Device, traffic: dict[str, dict[str, int]] | None = None) -> DeviceOut:
+    data = DeviceOut.model_validate(device)
+    if traffic:
+        stats = traffic.get(device.mac.upper()) or traffic.get(mikrotik.normalize_mac(device.mac))
+        if stats:
+            data.traffic_upload_bytes = stats.get("upload_bytes", 0)
+            data.traffic_download_bytes = stats.get("download_bytes", 0)
+    return data
+
+
 @router.get("/devices", response_model=list[DeviceOut])
 def list_devices(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
-) -> list[Device]:
-    return _devices_for_user(user, db)
+) -> list[DeviceOut]:
+    devices = _devices_for_user(user, db)
+    traffic: dict[str, dict[str, int]] = {}
+    if mikrotik.is_configured() and devices:
+        try:
+            # Ensure accounting exists for older devices (best-effort)
+            for d in devices:
+                if not d.mikrotik_queue_id:
+                    try:
+                        qid = mikrotik.ensure_traffic_accounting(d.mac, d.mikrotik_queue_id)
+                        d.mikrotik_queue_id = qid
+                    except Exception:  # noqa: BLE001
+                        pass
+            db.commit()
+            traffic = mikrotik.get_traffic_by_mac([d.mac for d in devices])
+        except Exception:  # noqa: BLE001
+            traffic = {}
+    return [_device_out(d, traffic) for d in devices]
 
 
 @router.post("/devices", response_model=DeviceOut, status_code=201)
@@ -83,7 +109,7 @@ def create_device(
     body: DeviceCreate,
     _: Annotated[User, Depends(get_current_admin)],
     db: Annotated[Session, Depends(get_db)],
-) -> Device:
+) -> DeviceOut:
     mac = _normalize_mac_or_400(body.mac)
     if db.query(Device).filter(Device.mac == mac).first():
         raise HTTPException(status_code=400, detail="Zariadenie s touto MAC už existuje")
@@ -110,6 +136,10 @@ def create_device(
                 blocked=False,
             )
             device.mikrotik_filter_id = rule_id
+            try:
+                device.mikrotik_queue_id = mikrotik.ensure_traffic_accounting(device.mac)
+            except Exception:  # noqa: BLE001
+                pass
             db.commit()
             db.refresh(device)
         except Exception as exc:  # noqa: BLE001
@@ -118,7 +148,7 @@ def create_device(
                 detail=f"Zariadenie uložené, ale firewall rule na MikroTiku zlyhalo: {exc}",
             ) from exc
 
-    return device
+    return _device_out(device)
 
 
 @router.patch("/devices/{device_id}", response_model=DeviceOut)
@@ -161,8 +191,36 @@ def delete_device(
             mikrotik.remove_device_rule(device.mikrotik_filter_id, device.address_list, device.mac)
         except Exception:  # noqa: BLE001
             pass
+        try:
+            mikrotik.remove_traffic_accounting(device.mac)
+        except Exception:  # noqa: BLE001
+            pass
     db.delete(device)
     db.commit()
+
+
+@router.post("/devices/{device_id}/traffic/reset", response_model=DeviceOut)
+def reset_device_traffic(
+    device_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> DeviceOut:
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
+    if not _user_can_access_device(user, device, db):
+        raise HTTPException(status_code=403, detail="Nemáš prístup k tomuto zariadeniu")
+    if not mikrotik.is_configured():
+        raise HTTPException(status_code=503, detail="MikroTik nie je nakonfigurovaný")
+    try:
+        if not device.mikrotik_queue_id:
+            device.mikrotik_queue_id = mikrotik.ensure_traffic_accounting(device.mac)
+            db.commit()
+        mikrotik.reset_traffic_counters(device.mac)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"MikroTik chyba: {exc}") from exc
+    traffic = mikrotik.get_traffic_by_mac([device.mac])
+    return _device_out(device, traffic)
 
 
 @router.post("/devices/{device_id}/internet", response_model=DeviceOut)

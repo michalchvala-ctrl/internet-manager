@@ -20,6 +20,9 @@ export type Device = {
   internet_blocked_since: string | null;
   social_blocked_since: string | null;
   created_at: string;
+  mikrotik_filter_id?: string | null;
+  traffic_upload_bytes?: number | null;
+  traffic_download_bytes?: number | null;
 };
 
 export type Status = {
@@ -135,4 +138,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ blocked }),
     }),
+  resetTraffic: (id: number) =>
+    request<Device>(`/api/devices/${id}/traffic/reset`, { method: "POST" }),
 };

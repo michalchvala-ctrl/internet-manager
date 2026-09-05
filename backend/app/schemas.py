@@ -69,6 +69,8 @@ class DeviceOut(BaseModel):
     internet_blocked_since: datetime | None
     social_blocked_since: datetime | None
     mikrotik_filter_id: str | None = None
+    traffic_upload_bytes: int | None = None
+    traffic_download_bytes: int | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

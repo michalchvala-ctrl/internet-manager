@@ -1,0 +1,10 @@
+{
+  "name": "Internet Manager",
+  "short_name": "NetMgr",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0c1a24",
+  "theme_color": "#0c1a24",
+  "lang": "sk",
+  "icons": []
+}

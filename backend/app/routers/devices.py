@@ -82,7 +82,14 @@ def create_device(
 
     if mikrotik.is_configured():
         try:
-            mikrotik.ensure_firewall_drop_rule(device.address_list)
+            rule_id = mikrotik.ensure_device_rule(
+                device.address_list,
+                device.mac,
+                blocked=False,
+            )
+            device.mikrotik_filter_id = rule_id
+            db.commit()
+            db.refresh(device)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=502,
@@ -127,6 +134,11 @@ def delete_device(
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
+    if mikrotik.is_configured():
+        try:
+            mikrotik.remove_device_rule(device.mikrotik_filter_id, device.address_list, device.mac)
+        except Exception:  # noqa: BLE001
+            pass
     db.delete(device)
     db.commit()
 
@@ -149,7 +161,13 @@ def toggle_internet(
         )
 
     try:
-        mikrotik.set_internet_blocked(device.address_list, device.mac, body.blocked)
+        rule_id = mikrotik.set_internet_blocked(
+            device.address_list,
+            device.mac,
+            body.blocked,
+            existing_rule_id=device.mikrotik_filter_id,
+        )
+        device.mikrotik_filter_id = rule_id
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"MikroTik chyba: {exc}") from exc
 

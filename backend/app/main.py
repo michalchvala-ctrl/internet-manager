@@ -11,6 +11,7 @@ from app.auth import get_user_by_username, hash_password
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine
 from app.models import SocialDomain, User
+from sqlalchemy import inspect, text
 from app.routers import auth, devices
 
 logging.basicConfig(level=logging.INFO)
@@ -33,8 +34,21 @@ app.include_router(devices.router)
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
+def migrate_db() -> None:
+    """Lightweight SQLite column adds for existing volumes."""
+    insp = inspect(engine)
+    if "devices" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("devices")}
+    if "mikrotik_filter_id" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN mikrotik_filter_id VARCHAR(32)"))
+        logger.info("Added column devices.mikrotik_filter_id")
+
+
 def seed_db() -> None:
     Base.metadata.create_all(bind=engine)
+    migrate_db()
     db = SessionLocal()
     try:
         if not get_user_by_username(db, settings.admin_username):

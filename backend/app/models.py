@@ -38,6 +38,8 @@ class Device(Base):
     social_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     internet_blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     social_blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Permanent MikroTik /ip/firewall/filter .id – enable/disable instead of recreate
+    mikrotik_filter_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     owner: Mapped[User | None] = relationship(back_populates="devices")
 

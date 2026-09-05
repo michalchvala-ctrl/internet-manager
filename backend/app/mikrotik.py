@@ -1,4 +1,4 @@
-"""MikroTik RouterOS API – block internet per device MAC (not IP list)."""
+"""MikroTik RouterOS API – one filter rule per device, enable/disable on toggle."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$")
 
-# Cached per-process after first successful probe
 _HAS_WAN_LIST: bool | None = None
 _PLACE_BEFORE_ID: str | None = None
 _PLACE_BEFORE_RESOLVED = False
@@ -58,7 +57,6 @@ def _connect() -> Any:
 def mikrotik_api() -> Iterator[Any]:
     if not is_configured():
         raise RuntimeError("MikroTik nie je nakonfigurovaný (MIKROTIK_HOST / USER / PASSWORD)")
-
     api = _connect()
     try:
         yield api
@@ -86,8 +84,8 @@ def ping() -> tuple[bool, str | None]:
         )
 
 
-def _rule_comment(list_name: str, mac: str) -> str:
-    return f"internet-manager:{list_name}:{mac}"
+def rule_comment(list_name: str, mac: str) -> str:
+    return f"internet-manager:{list_name.strip()}:{normalize_mac(mac)}"
 
 
 def _has_wan_list(api: Any) -> bool:
@@ -143,113 +141,117 @@ def _resolve_place_before(api: Any) -> str | None:
     return _PLACE_BEFORE_ID
 
 
-def _find_rule_ids_for_mac(api: Any, list_name: str, mac: str) -> list[str]:
-    comment = _rule_comment(list_name, mac)
-    ids: list[str] = []
+def _set_disabled(api: Any, rule_id: str, disabled: bool) -> None:
+    """disabled=True means internet ALLOWED (rule off)."""
+    path = api.path("/ip/firewall/filter")
+    path.update(**{".id": rule_id, "disabled": "yes" if disabled else "no"})
+
+
+def _rule_exists(api: Any, rule_id: str) -> bool:
     for row in api.path("/ip/firewall/filter"):
-        if row.get("chain") != "forward":
-            continue
-        c = str(row.get("comment") or "")
-        if c == comment:
-            ids.append(row[".id"])
-        elif (
-            c.startswith("internet-manager:")
-            and str(row.get("src-mac-address", "")).upper().replace("-", ":") == mac
-        ):
-            ids.append(row[".id"])
-    return ids
+        if row.get(".id") == rule_id:
+            return True
+    return False
 
 
-def _lookup_ip_for_mac(api: Any, mac: str) -> str | None:
-    mac_n = normalize_mac(mac)
-    try:
-        for row in api.path("/ip/dhcp-server/lease"):
-            active = str(row.get("active-mac-address") or row.get("mac-address") or "")
-            if active.upper().replace("-", ":") == mac_n:
-                ip = row.get("active-address") or row.get("address")
-                if ip:
-                    return str(ip)
-    except Exception:  # noqa: BLE001
-        logger.warning("DHCP lookup failed", exc_info=True)
+def _find_id_by_comment(api: Any, comment: str) -> str | None:
+    for row in api.path("/ip/firewall/filter"):
+        if row.get("comment") == comment:
+            return row.get(".id")
     return None
 
 
-def set_internet_blocked(list_name: str, mac: str, blocked: bool) -> None:
-    """Block/unblock internet for a device via src-mac-address forward drop."""
+def ensure_device_rule(
+    list_name: str,
+    mac: str,
+    *,
+    blocked: bool = False,
+    existing_rule_id: str | None = None,
+) -> str:
+    """
+    Ensure a permanent forward drop rule for this MAC exists.
+    Returns MikroTik .id. Rule is enabled when blocked=True, disabled when False.
+    Fast path: if we already know .id, only enable/disable (no firewall scan).
+    """
     mac = normalize_mac(mac)
-    list_name = list_name.strip()
-    comment = _rule_comment(list_name, mac)
+    comment = rule_comment(list_name, mac)
 
     with mikrotik_api() as api:
         path = api.path("/ip/firewall/filter")
-        existing_ids = _find_rule_ids_for_mac(api, list_name, mac)
 
-        if blocked:
-            if not existing_ids:
-                params: dict[str, Any] = {
-                    "chain": "forward",
-                    "action": "drop",
-                    "src-mac-address": mac,
-                    "comment": comment,
-                }
-                if _has_wan_list(api):
-                    params["out-interface-list"] = "WAN"
-                place_before = _resolve_place_before(api)
-                if place_before:
-                    params["place-before"] = place_before
-                try:
-                    path.add(**params)
-                except TrapError:
-                    params.pop("place-before", None)
-                    path.add(**params)
-                logger.info("Blocked MAC %s list=%s", mac, list_name)
+        # Fast path – no scanning
+        if existing_rule_id:
+            try:
+                _set_disabled(api, existing_rule_id, disabled=not blocked)
+                return existing_rule_id
+            except TrapError:
+                logger.warning("Stored rule id %s missing, recreating", existing_rule_id)
 
-            # Best-effort IP mirror (one DHCP scan only when blocking)
-            ip = _lookup_ip_for_mac(api, mac)
-            if ip:
-                alist = api.path("/ip/firewall/address-list")
-                try:
-                    alist.add(list=list_name, address=ip, comment=f"internet-manager:{mac}")
-                except TrapError:
-                    pass
+        rule_id = _find_id_by_comment(api, comment)
+
+        if not rule_id:
+            params: dict[str, Any] = {
+                "chain": "forward",
+                "action": "drop",
+                "src-mac-address": mac,
+                "comment": comment,
+                "disabled": "no" if blocked else "yes",
+            }
+            if _has_wan_list(api):
+                params["out-interface-list"] = "WAN"
+            place_before = _resolve_place_before(api)
+            if place_before:
+                params["place-before"] = place_before
+            try:
+                ret = path.add(**params)
+            except TrapError:
+                params.pop("place-before", None)
+                ret = path.add(**params)
+
+            if isinstance(ret, str):
+                rule_id = ret
+            elif isinstance(ret, dict) and ret.get("ret"):
+                rule_id = str(ret["ret"])
+            else:
+                rule_id = _find_id_by_comment(api, comment)
+            if not rule_id:
+                raise RuntimeError("MikroTik rule vytvorené, ale neviem získať .id")
+            logger.info("Created permanent rule %s for %s (blocked=%s)", rule_id, mac, blocked)
         else:
-            for rid in existing_ids:
-                path.remove(rid)
-            # Clean mirrored IP entries for this MAC (single pass)
-            alist = api.path("/ip/firewall/address-list")
-            marker = f"internet-manager:{mac}"
-            for row in alist:
-                if row.get("list") == list_name and str(row.get("comment") or "") == marker:
-                    try:
-                        alist.remove(row[".id"])
-                    except TrapError:
-                        pass
-            logger.info("Unblocked MAC %s list=%s", mac, list_name)
+            _set_disabled(api, rule_id, disabled=not blocked)
+
+        return rule_id
+
+
+def set_internet_blocked(
+    list_name: str,
+    mac: str,
+    blocked: bool,
+    *,
+    existing_rule_id: str | None = None,
+) -> str:
+    """Fast path: enable/disable existing rule. Creates it once if missing. Returns rule id."""
+    return ensure_device_rule(
+        list_name,
+        mac,
+        blocked=blocked,
+        existing_rule_id=existing_rule_id,
+    )
+
+
+def remove_device_rule(rule_id: str | None, list_name: str, mac: str) -> None:
+    if not is_configured():
+        return
+    comment = rule_comment(list_name, mac)
+    with mikrotik_api() as api:
+        path = api.path("/ip/firewall/filter")
+        target = rule_id
+        if not target or not _rule_exists(api, target):
+            target = _find_id_by_comment(api, comment)
+        if target:
+            path.remove(target)
 
 
 def ensure_firewall_drop_rule(list_name: str) -> str:
-    """Shared address-list drop (for mirrored IPs). Per-MAC rules are created on toggle."""
-    comment = f"internet-manager-drop:{list_name}"
-    with mikrotik_api() as api:
-        path = api.path("/ip/firewall/filter")
-        for row in path:
-            if row.get("comment") == comment:
-                return "rule already exists"
-
-        params: dict[str, Any] = {
-            "chain": "forward",
-            "action": "drop",
-            "src-address-list": list_name,
-            "comment": comment,
-        }
-        if _has_wan_list(api):
-            params["out-interface-list"] = "WAN"
-        place_before = _resolve_place_before(api)
-        if place_before:
-            params["place-before"] = place_before
-        try:
-            path.add(**params)
-        except TrapError:
-            params.pop("place-before", None)
-            path.add(**params)
-        return "rule created"
+    """Legacy no-op helper kept for imports; per-device MAC rules are preferred."""
+    return f"ok:{list_name}"

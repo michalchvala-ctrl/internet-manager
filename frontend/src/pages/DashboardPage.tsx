@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Device, type Status, type TrafficDay } from "../api";
+import {
+  api,
+  type Device,
+  type ScheduleAction,
+  type ScheduleRule,
+  type SocialMode,
+  type Status,
+  type TrafficDay,
+} from "../api";
 import { useAuth } from "../auth";
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -7,6 +15,24 @@ const CATEGORY_LABEL: Record<string, string> = {
   pc: "PC",
   tv: "TV",
   other: "Iné",
+};
+
+const DAY_LABELS = [
+  { id: "0", short: "Po" },
+  { id: "1", short: "Ut" },
+  { id: "2", short: "St" },
+  { id: "3", short: "Št" },
+  { id: "4", short: "Pi" },
+  { id: "5", short: "So" },
+  { id: "6", short: "Ne" },
+];
+
+const ACTION_LABEL: Record<string, string> = {
+  internet_on: "Internet ON",
+  internet_off: "Internet OFF",
+  social_on: "Sociálne ON",
+  social_slow: "Sociálne SLOW",
+  social_off: "Sociálne OFF",
 };
 
 function formatBytes(n: number | null | undefined): string {
@@ -32,6 +58,21 @@ function formatSince(iso: string | null): string | null {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function socialModeOf(device: Device): SocialMode {
+  if (device.social_blocked) return "off";
+  if (device.social_slow) return "slow";
+  return "on";
+}
+
+function formatDays(days: string): string {
+  const set = new Set(days.split(",").map((d) => d.trim()).filter(Boolean));
+  if (set.size === 7) return "Každý deň";
+  if (["0", "1", "2", "3", "4"].every((d) => set.has(d)) && set.size === 5) return "Po–Pi";
+  return DAY_LABELS.filter((d) => set.has(d.id))
+    .map((d) => d.short)
+    .join(" ");
 }
 
 function Switch({
@@ -74,6 +115,12 @@ export function DashboardPage() {
   const [historyOpen, setHistoryOpen] = useState<number | null>(null);
   const [history, setHistory] = useState<Record<number, TrafficDay[]>>({});
   const [historyLoading, setHistoryLoading] = useState<number | null>(null);
+  const [schedOpen, setSchedOpen] = useState<number | null>(null);
+  const [schedules, setSchedules] = useState<Record<number, ScheduleRule[]>>({});
+  const [schedLoading, setSchedLoading] = useState<number | null>(null);
+  const [newTime, setNewTime] = useState("20:00");
+  const [newAction, setNewAction] = useState<ScheduleAction>("social_off");
+  const [newDays, setNewDays] = useState<string[]>(["0", "1", "2", "3", "4", "5", "6"]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -115,12 +162,71 @@ export function DashboardPage() {
     }
   }
 
+  async function openSchedules(deviceId: number) {
+    if (schedOpen === deviceId) {
+      setSchedOpen(null);
+      return;
+    }
+    setSchedOpen(deviceId);
+    setSchedLoading(deviceId);
+    try {
+      const rows = await api.schedules(deviceId);
+      setSchedules((prev) => ({ ...prev, [deviceId]: rows }));
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Chyba rozvrhu");
+    } finally {
+      setSchedLoading(null);
+    }
+  }
+
+  async function addSchedule(deviceId: number) {
+    if (newDays.length === 0) {
+      showToast("Vyber aspoň jeden deň");
+      return;
+    }
+    const key = `${deviceId}-sched-add`;
+    setBusyId(key);
+    try {
+      const rule = await api.createSchedule(deviceId, {
+        days: newDays.join(","),
+        time: newTime,
+        action: newAction,
+        enabled: true,
+      });
+      setSchedules((prev) => ({
+        ...prev,
+        [deviceId]: [...(prev[deviceId] ?? []), rule].sort((a, b) =>
+          a.time.localeCompare(b.time),
+        ),
+      }));
+      showToast("Rozvrh uložený – beží na pozadí v Dockeri");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Chyba");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function removeSchedule(deviceId: number, ruleId: number) {
+    setBusyId(`${deviceId}-sched-${ruleId}`);
+    try {
+      await api.deleteSchedule(ruleId);
+      setSchedules((prev) => ({
+        ...prev,
+        [deviceId]: (prev[deviceId] ?? []).filter((r) => r.id !== ruleId),
+      }));
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Chyba");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function toggleInternet(device: Device, blocked: boolean) {
     const key = `${device.id}-inet`;
     if (busyId) return;
     setBusyId(key);
 
-    // Optimistic UI – mobile musí vidieť zmenu hneď
     const prev = device;
     setDevices((list) =>
       list.map((d) =>
@@ -138,7 +244,6 @@ export function DashboardPage() {
       const updated = await api.toggleInternet(device.id, blocked);
       setDevices((list) => list.map((d) => (d.id === updated.id ? { ...d, ...updated } : d)));
     } catch (err) {
-      // Sync zo servera – request mohol stihnúť uložiť stav aj pri timeout chybe
       try {
         await load({ quiet: true });
       } catch {
@@ -150,7 +255,7 @@ export function DashboardPage() {
     }
   }
 
-  async function toggleSocial(device: Device, blocked: boolean) {
+  async function setSocial(device: Device, mode: SocialMode) {
     const key = `${device.id}-soc`;
     if (busyId) return;
     setBusyId(key);
@@ -161,15 +266,16 @@ export function DashboardPage() {
         d.id === device.id
           ? {
               ...d,
-              social_blocked: blocked,
-              social_blocked_since: blocked ? new Date().toISOString() : null,
+              social_blocked: mode === "off",
+              social_slow: mode === "slow",
+              social_blocked_since: mode === "off" ? new Date().toISOString() : null,
             }
           : d,
       ),
     );
 
     try {
-      const updated = await api.toggleSocial(device.id, blocked);
+      const updated = await api.setSocialMode(device.id, mode);
       setDevices((list) => list.map((d) => (d.id === updated.id ? { ...d, ...updated } : d)));
     } catch (err) {
       try {
@@ -182,6 +288,8 @@ export function DashboardPage() {
       setBusyId(null);
     }
   }
+
+  const slowKbps = status?.social_slow_limit_kbps ?? 256;
 
   return (
     <>
@@ -214,14 +322,21 @@ export function DashboardPage() {
               ? "OK"
               : "chyba"}
         </div>
-        <div className="pill">
-          <span className="dot" />
-          {user?.username}
-        </div>
+        {status?.mikrotik_webfig_url && (
+          <a
+            className="pill"
+            href={status.mikrotik_webfig_url}
+            target="_blank"
+            rel="noreferrer"
+            title="Grafy queue v Winbox/WebFig (Tools → Graphing)"
+          >
+            MikroTik grafy
+          </a>
+        )}
       </div>
 
       {(status?.mikrotik_error || status?.adguard_error) && (
-        <div className="error" style={{ marginBottom: 14 }}>
+        <div className="error-box">
           {status.mikrotik_error && (
             <div>
               <strong>MikroTik:</strong> {status.mikrotik_error}
@@ -246,7 +361,7 @@ export function DashboardPage() {
         <div className="device-list">
           {devices.map((device, i) => {
             const inetOn = !device.internet_blocked;
-            const socialOn = !device.social_blocked;
+            const mode = socialModeOf(device);
             const sinceInet = formatSince(device.internet_blocked_since);
             const sinceSoc = formatSince(device.social_blocked_since);
             const inetBusy = busyId === `${device.id}-inet`;
@@ -272,6 +387,13 @@ export function DashboardPage() {
                         onClick={() => void openHistory(device.id)}
                       >
                         {historyOpen === device.id ? "Skryť" : "14 dní"}
+                      </button>
+                      <button
+                        type="button"
+                        className="traffic-reset"
+                        onClick={() => void openSchedules(device.id)}
+                      >
+                        {schedOpen === device.id ? "Skryť čas" : "Rozvrh"}
                       </button>
                       <button
                         type="button"
@@ -327,6 +449,88 @@ export function DashboardPage() {
                             </tbody>
                           </table>
                         )}
+                        <div className="device-meta" style={{ marginTop: 8 }}>
+                          Celodenný graf podľa MAC: Winbox → Tools → Graphing → Queue
+                          (queue <code>im-traffic-…</code>). Appka ukladá denné MB do SQLite.
+                        </div>
+                      </div>
+                    )}
+                    {schedOpen === device.id && (
+                      <div className="schedule-panel">
+                        <div className="device-meta" style={{ marginBottom: 8 }}>
+                          Beží na pozadí v kontajneri ({status?.timezone ?? "Europe/Bratislava"}) –
+                          appka nemusí byť otvorená.
+                        </div>
+                        {schedLoading === device.id ? (
+                          <div className="device-meta">Načítavam…</div>
+                        ) : (
+                          <ul className="schedule-list">
+                            {(schedules[device.id] ?? []).map((rule) => (
+                              <li key={rule.id}>
+                                <span>
+                                  <strong>{rule.time}</strong> · {formatDays(rule.days)} ·{" "}
+                                  {ACTION_LABEL[rule.action] ?? rule.action}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="traffic-reset"
+                                  disabled={busyId === `${device.id}-sched-${rule.id}`}
+                                  onClick={() => void removeSchedule(device.id, rule.id)}
+                                >
+                                  Zmazať
+                                </button>
+                              </li>
+                            ))}
+                            {(schedules[device.id] ?? []).length === 0 && (
+                              <li className="device-meta">Zatiaľ žiadne pravidlá</li>
+                            )}
+                          </ul>
+                        )}
+                        <div className="schedule-form">
+                          <div className="day-picks">
+                            {DAY_LABELS.map((d) => (
+                              <button
+                                key={d.id}
+                                type="button"
+                                className={`day-chip${newDays.includes(d.id) ? " on" : ""}`}
+                                onClick={() =>
+                                  setNewDays((prev) =>
+                                    prev.includes(d.id)
+                                      ? prev.filter((x) => x !== d.id)
+                                      : [...prev, d.id],
+                                  )
+                                }
+                              >
+                                {d.short}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="schedule-row">
+                            <input
+                              type="time"
+                              value={newTime}
+                              onChange={(e) => setNewTime(e.target.value)}
+                            />
+                            <select
+                              value={newAction}
+                              onChange={(e) => setNewAction(e.target.value as ScheduleAction)}
+                            >
+                              {Object.entries(ACTION_LABEL).map(([k, label]) => (
+                                <option key={k} value={k}>
+                                  {label}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="btn"
+                              disabled={busyId === `${device.id}-sched-add`}
+                              onClick={() => void addSchedule(device.id)}
+                            >
+                              Pridať
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -356,26 +560,44 @@ export function DashboardPage() {
                     />
                   </div>
 
-                  <div className={`toggle-row ${socialOn ? "on" : "off"}${socBusy ? " busy" : ""}`}>
+                  <div
+                    className={`toggle-row social-mode-row ${
+                      mode === "on" ? "on" : mode === "slow" ? "slow" : "off"
+                    }${socBusy ? " busy" : ""}`}
+                  >
                     <div className="toggle-label">
-                      <strong>Sociálne {socialOn ? "ON" : "OFF"}</strong>
+                      <strong>
+                        Sociálne{" "}
+                        {mode === "on" ? "ON" : mode === "slow" ? "SLOW" : "OFF"}
+                      </strong>
                       <small>
                         {socBusy
                           ? "Ukladám…"
-                          : socialOn
-                            ? "TikTok / IG / Snap povolené"
-                            : sinceSoc
-                              ? `Sociálne blokované od ${sinceSoc}`
-                              : "Sociálne siete blokované"}
+                          : mode === "on"
+                            ? "TikTok / IG / Snap naplno"
+                            : mode === "slow"
+                              ? `Spomalené ~${slowKbps} kbit/s (chat OK, video slabé)`
+                              : sinceSoc
+                                ? `Blokované od ${sinceSoc}`
+                                : "Sociálne siete blokované"}
                       </small>
                     </div>
-                    <Switch
-                      checked={socialOn}
-                      label={`Sociálne ${device.name}`}
-                      pending={socBusy}
-                      disabled={Boolean(busyId) && !socBusy}
-                      onChange={(next) => void toggleSocial(device, !next)}
-                    />
+                    <div className="seg" role="group" aria-label={`Sociálne ${device.name}`}>
+                      {(["on", "slow", "off"] as SocialMode[]).map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          className={`seg-btn${mode === m ? " active" : ""}`}
+                          disabled={Boolean(busyId) && !socBusy}
+                          onClick={() => {
+                            if (socBusy || mode === m) return;
+                            void setSocial(device, m);
+                          }}
+                        >
+                          {m === "on" ? "ON" : m === "slow" ? "SLOW" : "OFF"}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </article>

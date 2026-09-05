@@ -66,6 +66,7 @@ class DeviceOut(BaseModel):
     owner_id: int | None
     internet_blocked: bool
     social_blocked: bool
+    social_slow: bool = False
     internet_blocked_since: datetime | None
     social_blocked_since: datetime | None
     mikrotik_filter_id: str | None = None
@@ -91,6 +92,51 @@ class DeviceTrafficHistoryOut(BaseModel):
 
 class ToggleRequest(BaseModel):
     blocked: bool
+
+
+class SocialModeRequest(BaseModel):
+    mode: Literal["on", "slow", "off"]
+
+
+class ScheduleRuleCreate(BaseModel):
+    days: str = Field(default="0,1,2,3,4,5,6", max_length=32)
+    time: str = Field(min_length=4, max_length=5, pattern=r"^\d{2}:\d{2}$")
+    action: Literal[
+        "internet_on",
+        "internet_off",
+        "social_on",
+        "social_slow",
+        "social_off",
+    ]
+    enabled: bool = True
+
+
+class ScheduleRuleUpdate(BaseModel):
+    days: str | None = Field(default=None, max_length=32)
+    time: str | None = Field(default=None, min_length=4, max_length=5, pattern=r"^\d{2}:\d{2}$")
+    action: (
+        Literal[
+            "internet_on",
+            "internet_off",
+            "social_on",
+            "social_slow",
+            "social_off",
+        ]
+        | None
+    ) = None
+    enabled: bool | None = None
+
+
+class ScheduleRuleOut(BaseModel):
+    id: int
+    device_id: int
+    enabled: bool
+    days: str
+    time: str
+    action: str
+    last_fired: str | None = None
+
+    model_config = {"from_attributes": True}
 
 
 class SocialDomainOut(BaseModel):
@@ -121,3 +167,6 @@ class StatusOut(BaseModel):
     adguard_configured: bool
     adguard_ok: bool | None
     adguard_error: str | None
+    mikrotik_webfig_url: str | None = None
+    social_slow_limit_kbps: int | None = None
+    timezone: str | None = None

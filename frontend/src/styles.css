@@ -374,6 +374,135 @@ a {
   background: var(--bad-dim);
 }
 
+.toggle-row.slow {
+  border-color: rgba(230, 168, 54, 0.4);
+  background: rgba(230, 168, 54, 0.12);
+}
+
+.seg {
+  display: inline-flex;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.seg-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 10px 11px;
+  cursor: pointer;
+}
+
+.seg-btn.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+.toggle-row.on .seg-btn.active {
+  background: rgba(61, 186, 122, 0.35);
+  color: #dff8ea;
+}
+
+.toggle-row.slow .seg-btn.active {
+  background: rgba(230, 168, 54, 0.4);
+  color: #ffe9ba;
+}
+
+.toggle-row.off .seg-btn.active {
+  background: rgba(232, 93, 93, 0.4);
+  color: #ffd4d4;
+}
+
+.seg-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.schedule-panel {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.schedule-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.schedule-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.86rem;
+}
+
+.schedule-form {
+  display: grid;
+  gap: 10px;
+}
+
+.day-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.day-chip {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.day-chip.on {
+  border-color: rgba(61, 186, 122, 0.45);
+  background: var(--ok-dim);
+  color: var(--text);
+}
+
+.schedule-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.schedule-row input,
+.schedule-row select {
+  font: inherit;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+@media (max-width: 520px) {
+  .social-mode-row {
+    grid-template-columns: 1fr;
+  }
+
+  .schedule-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .toggle-label {
   display: flex;
   flex-direction: column;

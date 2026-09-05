@@ -473,6 +473,17 @@ def ensure_traffic_accounting(mac: str, existing_queue_id: str | None = None) ->
                 raise RuntimeError("Traffic queue sa nepodarilo vytvoriť")
             logger.info("Created traffic queue %s for %s", queue_id, mac)
 
+        # Enable Winbox/WebFig graphs for this queue
+        qname = f"im-traffic-{mark}"[:60]
+        for row in queues:
+            if row.get(".id") == queue_id and row.get("name"):
+                qname = str(row["name"])
+                break
+        try:
+            enable_queue_graphing(qname)
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not enable graphing for %s", qname, exc_info=True)
+
         return queue_id
 
 
@@ -565,3 +576,164 @@ def remove_traffic_accounting(mac: str) -> None:
                     queues.remove(row[".id"])
                 except TrapError:
                     pass
+        # graphing entries referencing removed queues are cleaned by ROS eventually
+
+
+SOCIAL_TLS_HOSTS = [
+    "instagram.com",
+    "*.instagram.com",
+    "cdninstagram.com",
+    "*.cdninstagram.com",
+    "facebook.com",
+    "*.facebook.com",
+    "fbcdn.net",
+    "*.fbcdn.net",
+    "tiktok.com",
+    "*.tiktok.com",
+    "musical.ly",
+    "*.musical.ly",
+    "snapchat.com",
+    "*.snapchat.com",
+    "youtube.com",
+    "*.youtube.com",
+    "googlevideo.com",
+    "*.googlevideo.com",
+    "youtu.be",
+    "discord.com",
+    "*.discord.com",
+    "discordapp.com",
+    "*.discordapp.com",
+]
+
+
+def _slow_comment(mac: str) -> str:
+    return f"internet-manager-slow:{normalize_mac(mac)}"
+
+
+def _slow_mark(mac: str) -> str:
+    return "ims" + normalize_mac(mac).replace(":", "").lower()
+
+
+def set_social_slow(mac: str, enabled: bool, limit_kbps: int | None = None) -> None:
+    """
+    Throttle social TLS traffic for a MAC via mangle + simple queue.
+    Also drops UDP/443 for that MAC while enabled (forces TCP so SNI marking works).
+    """
+    from app.config import get_settings
+
+    mac = normalize_mac(mac)
+    comment = _slow_comment(mac)
+    mark = _slow_mark(mac)
+    limit = int(limit_kbps or get_settings().social_slow_limit_kbps)
+    limit_str = f"{limit}k/{limit}k"
+
+    with mikrotik_api() as api:
+        _ensure_fasttrack_skips_marked(api)
+        mangle = api.path("/ip/firewall/mangle")
+        filt = api.path("/ip/firewall/filter")
+        queues = api.path("/queue/simple")
+
+        # Remove existing slow rules for this MAC
+        for row in list(mangle):
+            if row.get("comment") == comment:
+                try:
+                    mangle.remove(row[".id"])
+                except TrapError:
+                    pass
+        for row in list(filt):
+            if row.get("comment") == comment:
+                try:
+                    filt.remove(row[".id"])
+                except TrapError:
+                    pass
+        for row in list(queues):
+            if row.get("comment") == comment:
+                try:
+                    queues.remove(row[".id"])
+                except TrapError:
+                    pass
+
+        if not enabled:
+            return
+
+        # Force TCP for HTTPS (QUIC bypasses TLS host matching)
+        try:
+            filt.add(
+                chain="forward",
+                action="drop",
+                protocol="udp",
+                **{"dst-port": "443", "src-mac-address": mac},
+                comment=comment,
+            )
+        except TrapError as exc:
+            logger.warning("UDP443 drop failed: %s", exc)
+
+        for host in SOCIAL_TLS_HOSTS:
+            try:
+                mangle.add(
+                    chain="forward",
+                    action="mark-connection",
+                    **{
+                        "new-connection-mark": mark,
+                        "src-mac-address": mac,
+                        "tls-host": host,
+                        "passthrough": "yes",
+                    },
+                    comment=comment,
+                )
+            except TrapError as exc:
+                logger.warning("tls-host mangle %s failed: %s", host, exc)
+
+        try:
+            mangle.add(
+                chain="forward",
+                action="mark-packet",
+                **{
+                    "new-packet-mark": mark,
+                    "connection-mark": mark,
+                    "passthrough": "yes",
+                },
+                comment=comment,
+            )
+        except TrapError as exc:
+            logger.warning("slow mark-packet failed: %s", exc)
+
+        try:
+            queues.add(
+                name=f"im-slow-{mark}"[:60],
+                **{
+                    "packet-marks": mark,
+                    "max-limit": limit_str,
+                    "limit-at": limit_str,
+                },
+                target="0.0.0.0/0",
+                comment=comment,
+            )
+        except TrapError as exc:
+            logger.warning("slow queue failed: %s", exc)
+            raise
+
+
+def enable_queue_graphing(queue_name: str) -> None:
+    """Enable MikroTik tool graphing for a simple queue (Winbox/WebFig graphs)."""
+    with mikrotik_api() as api:
+        try:
+            # Global graphing on
+            for row in api.path("/tool/graphing"):
+                if str(row.get("enabled", "true")).lower() in {"false", "no"}:
+                    api.path("/tool/graphing").update(**{".id": row[".id"], "enabled": "yes"})
+        except Exception:  # noqa: BLE001
+            try:
+                api.path("/tool/graphing").set(enabled="yes")
+            except Exception:  # noqa: BLE001
+                pass
+
+        gpath = api.path("/tool/graphing/queue")
+        for row in gpath:
+            if row.get("simple-queue") == queue_name:
+                return
+        try:
+            gpath.add(**{"simple-queue": queue_name, "allow-address": "0.0.0.0/0"})
+            logger.info("Enabled graphing for queue %s", queue_name)
+        except TrapError as exc:
+            logger.warning("graphing queue add failed: %s", exc)

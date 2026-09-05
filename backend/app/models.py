@@ -43,6 +43,7 @@ class Device(Base):
     social_blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     mikrotik_filter_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     mikrotik_queue_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    social_slow: Mapped[bool] = mapped_column(Boolean, default=False)
     # Last seen cumulative MikroTik queue counters (for daily delta)
     traffic_snap_upload: Mapped[int] = mapped_column(Integer, default=0)
     traffic_snap_download: Mapped[int] = mapped_column(Integer, default=0)
@@ -54,6 +55,10 @@ class Device(Base):
         cascade="all, delete-orphan",
     )
     traffic_days: Mapped[list["TrafficDaily"]] = relationship(
+        back_populates="device",
+        cascade="all, delete-orphan",
+    )
+    schedule_rules: Mapped[list["ScheduleRule"]] = relationship(
         back_populates="device",
         cascade="all, delete-orphan",
     )
@@ -94,3 +99,21 @@ class TrafficDaily(Base):
     download_bytes: Mapped[int] = mapped_column(Integer, default=0)
 
     device: Mapped[Device] = relationship(back_populates="traffic_days")
+
+
+class ScheduleRule(Base):
+    """Weekly timed action for a device – executed by background scheduler in Docker."""
+
+    __tablename__ = "schedule_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Python weekday: 0=Mon .. 6=Sun, comma-separated e.g. "0,1,2,3,4"
+    days: Mapped[str] = mapped_column(String(32), default="0,1,2,3,4,5,6")
+    time: Mapped[str] = mapped_column(String(5))  # HH:MM
+    # internet_on|internet_off|social_on|social_slow|social_off
+    action: Mapped[str] = mapped_column(String(32))
+    last_fired: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    device: Mapped[Device] = relationship(back_populates="schedule_rules")

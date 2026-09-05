@@ -23,6 +23,7 @@ export type Device = {
   owner_id: number | null;
   internet_blocked: boolean;
   social_blocked: boolean;
+  social_slow: boolean;
   internet_blocked_since: string | null;
   social_blocked_since: string | null;
   created_at: string;
@@ -33,6 +34,25 @@ export type Device = {
   traffic_today_download_bytes?: number | null;
 };
 
+export type SocialMode = "on" | "slow" | "off";
+
+export type ScheduleAction =
+  | "internet_on"
+  | "internet_off"
+  | "social_on"
+  | "social_slow"
+  | "social_off";
+
+export type ScheduleRule = {
+  id: number;
+  device_id: number;
+  enabled: boolean;
+  days: string;
+  time: string;
+  action: ScheduleAction | string;
+  last_fired: string | null;
+};
+
 export type Status = {
   mikrotik_configured: boolean;
   mikrotik_ok: boolean | null;
@@ -40,6 +60,9 @@ export type Status = {
   adguard_configured: boolean;
   adguard_ok: boolean | null;
   adguard_error: string | null;
+  mikrotik_webfig_url?: string | null;
+  social_slow_limit_kbps?: number | null;
+  timezone?: string | null;
 };
 
 const TOKEN_KEY = "im_token";
@@ -141,10 +164,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ blocked }),
     }),
-  toggleSocial: (id: number, blocked: boolean) =>
+  setSocialMode: (id: number, mode: SocialMode) =>
     request<Device>(`/api/devices/${id}/social`, {
       method: "POST",
-      body: JSON.stringify({ blocked }),
+      body: JSON.stringify({ mode }),
     }),
   resetTraffic: (id: number) =>
     request<Device>(`/api/devices/${id}/traffic/reset`, { method: "POST" }),
@@ -152,4 +175,21 @@ export const api = {
     request<{ device_id: number; days: TrafficDay[] }>(
       `/api/devices/${id}/traffic?days=${days}`,
     ),
+  schedules: (deviceId: number) =>
+    request<ScheduleRule[]>(`/api/devices/${deviceId}/schedules`),
+  createSchedule: (
+    deviceId: number,
+    data: { days: string; time: string; action: ScheduleAction; enabled?: boolean },
+  ) =>
+    request<ScheduleRule>(`/api/devices/${deviceId}/schedules`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateSchedule: (ruleId: number, data: Partial<ScheduleRule>) =>
+    request<ScheduleRule>(`/api/schedules/${ruleId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  deleteSchedule: (ruleId: number) =>
+    request<void>(`/api/schedules/${ruleId}`, { method: "DELETE" }),
 };

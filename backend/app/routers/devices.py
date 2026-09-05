@@ -2,17 +2,22 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app import adguard, mikrotik
+from app import actions, adguard, mikrotik
 from app.auth import get_current_admin, get_current_user
+from app.config import get_settings
 from app.database import get_db
-from app.models import Device, DeviceAccess, SocialDomain, TrafficDaily, User
+from app.models import Device, DeviceAccess, ScheduleRule, SocialDomain, TrafficDaily, User
 from app.schemas import (
     DeviceCreate,
     DeviceOut,
     DeviceTrafficHistoryOut,
     DeviceUpdate,
+    ScheduleRuleCreate,
+    ScheduleRuleOut,
+    ScheduleRuleUpdate,
     SocialDomainCreate,
     SocialDomainOut,
     StatusOut,
@@ -53,8 +58,22 @@ def _devices_for_user(user: User, db: Session) -> list[Device]:
     )
 
 
+def _get_accessible_device(
+    device_id: int,
+    user: User,
+    db: Session,
+) -> Device:
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
+    if not _user_can_access_device(user, device, db):
+        raise HTTPException(status_code=403, detail="Nemáš prístup k tomuto zariadeniu")
+    return device
+
+
 @router.get("/status", response_model=StatusOut)
 def status(_: Annotated[User, Depends(get_current_user)]) -> StatusOut:
+    settings = get_settings()
     mt_cfg = mikrotik.is_configured()
     ag_cfg = adguard.is_configured()
     mt_ok, mt_err = (None, None)
@@ -70,6 +89,9 @@ def status(_: Annotated[User, Depends(get_current_user)]) -> StatusOut:
         adguard_configured=ag_cfg,
         adguard_ok=ag_ok,
         adguard_error=None if ag_ok else ag_err,
+        mikrotik_webfig_url=settings.mikrotik_webfig_url or None,
+        social_slow_limit_kbps=settings.social_slow_limit_kbps,
+        timezone=settings.timezone,
     )
 
 
@@ -169,7 +191,7 @@ def update_device(
     body: DeviceUpdate,
     _: Annotated[User, Depends(get_current_admin)],
     db: Annotated[Session, Depends(get_db)],
-) -> Device:
+) -> DeviceOut:
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
@@ -186,7 +208,7 @@ def update_device(
 
     db.commit()
     db.refresh(device)
-    return device
+    return _device_out(device)
 
 
 @router.delete("/devices/{device_id}", status_code=204)
@@ -207,6 +229,10 @@ def delete_device(
             mikrotik.remove_traffic_accounting(device.mac)
         except Exception:  # noqa: BLE001
             pass
+        try:
+            mikrotik.set_social_slow(device.mac, False)
+        except Exception:  # noqa: BLE001
+            pass
     db.delete(device)
     db.commit()
 
@@ -218,13 +244,8 @@ def device_traffic_history(
     db: Annotated[Session, Depends(get_db)],
     days: int = 14,
 ) -> DeviceTrafficHistoryOut:
-    device = db.get(Device, device_id)
-    if not device:
-        raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
-    if not _user_can_access_device(user, device, db):
-        raise HTTPException(status_code=403, detail="Nemáš prístup k tomuto zariadeniu")
+    device = _get_accessible_device(device_id, user, db)
 
-    # Refresh today's bucket before returning history
     if mikrotik.is_configured():
         try:
             if not device.mikrotik_queue_id:
@@ -255,18 +276,13 @@ def reset_device_traffic(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> DeviceOut:
-    device = db.get(Device, device_id)
-    if not device:
-        raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
-    if not _user_can_access_device(user, device, db):
-        raise HTTPException(status_code=403, detail="Nemáš prístup k tomuto zariadeniu")
+    device = _get_accessible_device(device_id, user, db)
     if not mikrotik.is_configured():
         raise HTTPException(status_code=503, detail="MikroTik nie je nakonfigurovaný")
     try:
         if not device.mikrotik_queue_id:
             device.mikrotik_queue_id = mikrotik.ensure_traffic_accounting(device.mac)
             db.commit()
-        # Flush pending delta into today, then reset MikroTik counters + snapshot
         traffic = mikrotik.get_traffic_by_mac([device.mac])
         today_map = traffic_svc.sync_devices_traffic(db, [device], traffic)
         mikrotik.reset_traffic_counters(device.mac)
@@ -286,84 +302,119 @@ def toggle_internet(
     body: ToggleRequest,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
-) -> Device:
-    device = db.get(Device, device_id)
-    if not device:
-        raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
-    if not _user_can_access_device(user, device, db):
-        raise HTTPException(status_code=403, detail="Nemáš prístup k tomuto zariadeniu")
-
-    if not mikrotik.is_configured():
-        raise HTTPException(
-            status_code=503,
-            detail="MikroTik nie je nakonfigurovaný – nastav MIKROTIK_* v .env",
-        )
-
+) -> DeviceOut:
+    device = _get_accessible_device(device_id, user, db)
     try:
-        rule_id = mikrotik.set_internet_blocked(
-            device.address_list,
-            device.mac,
-            body.blocked,
-            existing_rule_id=device.mikrotik_filter_id,
-        )
-        device.mikrotik_filter_id = rule_id
+        device = actions.apply_internet(db, device, body.blocked)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"MikroTik chyba: {exc}") from exc
+    return _device_out(device)
 
-    device.internet_blocked = body.blocked
-    device.internet_blocked_since = datetime.utcnow() if body.blocked else None
-    db.commit()
-    db.refresh(device)
-    return device
+
+class SocialBody(BaseModel):
+    """Accepts either {mode} or legacy {blocked}."""
+
+    mode: str | None = None
+    blocked: bool | None = None
 
 
 @router.post("/devices/{device_id}/social", response_model=DeviceOut)
 def toggle_social(
     device_id: int,
-    body: ToggleRequest,
+    body: SocialBody,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
-) -> Device:
-    device = db.get(Device, device_id)
-    if not device:
-        raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
-    if not _user_can_access_device(user, device, db):
-        raise HTTPException(status_code=403, detail="Nemáš prístup k tomuto zariadeniu")
+) -> DeviceOut:
+    device = _get_accessible_device(device_id, user, db)
 
-    if not adguard.is_configured():
-        raise HTTPException(
-            status_code=503,
-            detail="AdGuard nie je nakonfigurovaný – nastav ADGUARD_* v .env (alebo použij len Internet OFF)",
-        )
+    if body.mode:
+        mode = body.mode.strip().lower()
+    elif body.blocked is not None:
+        mode = "off" if body.blocked else "on"
+    else:
+        raise HTTPException(status_code=400, detail="Pošli mode (on|slow|off) alebo blocked")
 
-    domains = [
-        d.domain
-        for d in db.query(SocialDomain).filter(SocialDomain.enabled.is_(True)).all()
-    ]
-    if not domains:
-        domains = adguard.DEFAULT_SOCIAL_DOMAINS
+    if mode not in {"on", "slow", "off"}:
+        raise HTTPException(status_code=400, detail="mode musí byť on, slow alebo off")
 
     try:
-        ip = None
-        if mikrotik.is_configured():
-            try:
-                ip = mikrotik.lookup_ip_for_mac(device.mac)
-            except Exception:  # noqa: BLE001
-                ip = None
-        adguard.set_social_blocked(device.mac, body.blocked, domains, ip=ip)
-        if body.blocked and ip and mikrotik.is_configured():
-            try:
-                mikrotik.kill_connections_for_ip(ip)
-            except Exception:  # noqa: BLE001
-                pass
+        device = actions.apply_social_mode(db, device, mode)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"AdGuard chyba: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Social chyba: {exc}") from exc
+    return _device_out(device)
 
-    device.social_blocked = body.blocked
-    device.social_blocked_since = datetime.utcnow() if body.blocked else None
+
+@router.get("/devices/{device_id}/schedules", response_model=list[ScheduleRuleOut])
+def list_schedules(
+    device_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[ScheduleRule]:
+    _get_accessible_device(device_id, user, db)
+    return (
+        db.query(ScheduleRule)
+        .filter(ScheduleRule.device_id == device_id)
+        .order_by(ScheduleRule.time, ScheduleRule.id)
+        .all()
+    )
+
+
+@router.post("/devices/{device_id}/schedules", response_model=ScheduleRuleOut, status_code=201)
+def create_schedule(
+    device_id: int,
+    body: ScheduleRuleCreate,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ScheduleRule:
+    _get_accessible_device(device_id, user, db)
+    rule = ScheduleRule(
+        device_id=device_id,
+        enabled=body.enabled,
+        days=body.days.strip(),
+        time=body.time.strip(),
+        action=body.action,
+    )
+    db.add(rule)
     db.commit()
-    db.refresh(device)
-    return device
+    db.refresh(rule)
+    return rule
+
+
+@router.patch("/schedules/{rule_id}", response_model=ScheduleRuleOut)
+def update_schedule(
+    rule_id: int,
+    body: ScheduleRuleUpdate,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ScheduleRule:
+    rule = db.get(ScheduleRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Pravidlo neexistuje")
+    _get_accessible_device(rule.device_id, user, db)
+    data = body.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        setattr(rule, key, value)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@router.delete("/schedules/{rule_id}", status_code=204)
+def delete_schedule(
+    rule_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> None:
+    rule = db.get(ScheduleRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Pravidlo neexistuje")
+    _get_accessible_device(rule.device_id, user, db)
+    db.delete(rule)
+    db.commit()
 
 
 @router.get("/social-domains", response_model=list[SocialDomainOut])

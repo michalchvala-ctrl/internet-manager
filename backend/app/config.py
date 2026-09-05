@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     adguard_password: str = ""
     adguard_social_filter_name: str = "Social media block"
 
+    # Social slow mode (kbit/s) – chat often works, video struggles
+    social_slow_limit_kbps: int = 256
+    timezone: str = "Europe/Bratislava"
+    mikrotik_webfig_url: str = ""  # optional e.g. http://192.168.1.1 – for graph links
+
 
 @lru_cache
 def get_settings() -> Settings:

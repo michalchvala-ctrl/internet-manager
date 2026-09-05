@@ -13,6 +13,7 @@ from app.database import Base, SessionLocal, engine
 from app.models import SocialDomain, User
 from sqlalchemy import inspect, text
 from app.routers import auth, devices
+from app.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ def migrate_db() -> None:
         ("traffic_snap_upload", "INTEGER DEFAULT 0"),
         ("traffic_snap_download", "INTEGER DEFAULT 0"),
         ("traffic_snap_at", "DATETIME"),
+        ("social_slow", "BOOLEAN DEFAULT 0"),
     ]:
         if col not in cols:
             with engine.begin() as conn:
@@ -91,6 +93,12 @@ def on_startup() -> None:
         db_path = settings.database_url.replace("sqlite:///", "", 1)
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     seed_db()
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    stop_scheduler()
 
 
 @app.get("/api/health")

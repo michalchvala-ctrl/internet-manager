@@ -51,9 +51,10 @@ a {
 }
 
 .app-shell {
-  max-width: 720px;
+  max-width: min(100%, 1200px);
+  width: 100%;
   margin: 0 auto;
-  padding: 14px 16px calc(48px + env(safe-area-inset-bottom));
+  padding: 14px 12px calc(48px + env(safe-area-inset-bottom));
   padding-top: calc(14px + env(safe-area-inset-top));
 }
 
@@ -242,6 +243,7 @@ a {
   box-shadow: var(--shadow);
   padding: 18px 16px 16px;
   animation: rise 0.35s ease both;
+  width: 100%;
 }
 
 @keyframes rise {
@@ -502,10 +504,30 @@ a {
 
 .schedule-panel {
   margin-top: 10px;
+  margin-left: -4px;
+  margin-right: -4px;
   padding: 12px;
   border-radius: 14px;
   border: 1px solid var(--line);
   background: rgba(0, 0, 0, 0.16);
+  width: calc(100% + 8px);
+  box-sizing: border-box;
+}
+
+.sched-chip {
+  display: grid;
+  gap: 1px;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 4px;
+  font: inherit;
+  font-size: 0.68rem;
+  line-height: 1.15;
+  cursor: pointer;
+  text-align: center;
+  color: #fff;
+  background: #3a4a56;
+  width: 100%;
 }
 
 .traffic-live {
@@ -539,15 +561,17 @@ a {
 .week-cal {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 4px;
+  gap: 6px;
   margin-bottom: 12px;
+  width: 100%;
 }
 
 .week-col {
   border-radius: 10px;
   border: 1px solid var(--line);
   background: rgba(0, 0, 0, 0.18);
-  min-height: 110px;
+  min-height: 130px;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -593,21 +617,6 @@ a {
   font-size: 0.7rem;
   text-align: center;
   opacity: 0.5;
-}
-
-.sched-chip {
-  display: grid;
-  gap: 1px;
-  border: none;
-  border-radius: 8px;
-  padding: 5px 4px;
-  font: inherit;
-  font-size: 0.62rem;
-  line-height: 1.15;
-  cursor: pointer;
-  text-align: center;
-  color: #fff;
-  background: #3a4a56;
 }
 
 .sched-chip.act-inet-on,
@@ -699,8 +708,24 @@ a {
   }
 
   .sched-chip {
-    font-size: 0.56rem;
+    font-size: 0.58rem;
     padding: 4px 2px;
+  }
+}
+
+@media (min-width: 900px) {
+  .app-shell {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .week-cal {
+    gap: 8px;
+  }
+
+  .sched-chip {
+    font-size: 0.72rem;
+    padding: 7px 5px;
   }
 }
 

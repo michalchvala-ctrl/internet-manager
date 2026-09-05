@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Device, type Status } from "../api";
+import { api, type Device, type Status, type TrafficDay } from "../api";
 import { useAuth } from "../auth";
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -71,6 +71,9 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState<number | null>(null);
+  const [history, setHistory] = useState<Record<number, TrafficDay[]>>({});
+  const [historyLoading, setHistoryLoading] = useState<number | null>(null);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -93,6 +96,24 @@ export function DashboardPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function openHistory(deviceId: number) {
+    if (historyOpen === deviceId) {
+      setHistoryOpen(null);
+      return;
+    }
+    setHistoryOpen(deviceId);
+    if (history[deviceId]) return;
+    setHistoryLoading(deviceId);
+    try {
+      const res = await api.trafficHistory(deviceId, 14);
+      setHistory((prev) => ({ ...prev, [deviceId]: res.days }));
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Chyba histórie");
+    } finally {
+      setHistoryLoading(null);
+    }
+  }
 
   async function toggleInternet(device: Device, blocked: boolean) {
     const key = `${device.id}-inet`;
@@ -241,8 +262,17 @@ export function DashboardPage() {
                     <h2>{device.name}</h2>
                     <div className="device-meta">{device.mac}</div>
                     <div className="traffic-row">
-                      <span title="Download">↓ {formatBytes(device.traffic_download_bytes)}</span>
-                      <span title="Upload">↑ {formatBytes(device.traffic_upload_bytes)}</span>
+                      <span className="traffic-today" title="Dnes (Bratislava)">
+                        Dnes ↓ {formatBytes(device.traffic_today_download_bytes)} · ↑{" "}
+                        {formatBytes(device.traffic_today_upload_bytes)}
+                      </span>
+                      <button
+                        type="button"
+                        className="traffic-reset"
+                        onClick={() => void openHistory(device.id)}
+                      >
+                        {historyOpen === device.id ? "Skryť" : "14 dní"}
+                      </button>
                       <button
                         type="button"
                         className="traffic-reset"
@@ -256,6 +286,11 @@ export function DashboardPage() {
                               setDevices((list) =>
                                 list.map((d) => (d.id === updated.id ? { ...d, ...updated } : d)),
                               );
+                              setHistory((prev) => {
+                                const copy = { ...prev };
+                                delete copy[device.id];
+                                return copy;
+                              });
                             })
                             .catch((err) =>
                               showToast(err instanceof Error ? err.message : "Chyba"),
@@ -263,9 +298,37 @@ export function DashboardPage() {
                             .finally(() => setBusyId(null));
                         }}
                       >
-                        Reset
+                        Reset queue
                       </button>
                     </div>
+                    {historyOpen === device.id && (
+                      <div className="traffic-history">
+                        {historyLoading === device.id ? (
+                          <div className="device-meta">Načítavam…</div>
+                        ) : (history[device.id] ?? []).length === 0 ? (
+                          <div className="device-meta">Zatiaľ žiadne denné dáta</div>
+                        ) : (
+                          <table className="traffic-table">
+                            <thead>
+                              <tr>
+                                <th>Deň</th>
+                                <th>↓</th>
+                                <th>↑</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(history[device.id] ?? []).map((row) => (
+                                <tr key={row.day}>
+                                  <td>{row.day}</td>
+                                  <td>{formatBytes(row.download_bytes)}</td>
+                                  <td>{formatBytes(row.upload_bytes)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <span className="cat">{CATEGORY_LABEL[device.category] ?? device.category}</span>
                 </div>

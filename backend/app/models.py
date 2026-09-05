@@ -43,9 +43,17 @@ class Device(Base):
     social_blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     mikrotik_filter_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     mikrotik_queue_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Last seen cumulative MikroTik queue counters (for daily delta)
+    traffic_snap_upload: Mapped[int] = mapped_column(Integer, default=0)
+    traffic_snap_download: Mapped[int] = mapped_column(Integer, default=0)
+    traffic_snap_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     owner: Mapped[User | None] = relationship(back_populates="devices")
     viewers: Mapped[list["DeviceAccess"]] = relationship(
+        back_populates="device",
+        cascade="all, delete-orphan",
+    )
+    traffic_days: Mapped[list["TrafficDaily"]] = relationship(
         back_populates="device",
         cascade="all, delete-orphan",
     )
@@ -71,3 +79,18 @@ class SocialDomain(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     domain: Mapped[str] = mapped_column(String(255), unique=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class TrafficDaily(Base):
+    """Bytes transferred per device per calendar day (Europe/Bratislava)."""
+
+    __tablename__ = "traffic_daily"
+    __table_args__ = (UniqueConstraint("device_id", "day", name="uq_device_day"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    day: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
+    upload_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    download_bytes: Mapped[int] = mapped_column(Integer, default=0)
+
+    device: Mapped[Device] = relationship(back_populates="traffic_days")

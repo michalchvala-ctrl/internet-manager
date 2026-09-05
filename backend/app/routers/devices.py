@@ -7,16 +7,19 @@ from sqlalchemy.orm import Session
 from app import adguard, mikrotik
 from app.auth import get_current_admin, get_current_user
 from app.database import get_db
-from app.models import Device, DeviceAccess, SocialDomain, User
+from app.models import Device, DeviceAccess, SocialDomain, TrafficDaily, User
 from app.schemas import (
     DeviceCreate,
     DeviceOut,
+    DeviceTrafficHistoryOut,
     DeviceUpdate,
     SocialDomainCreate,
     SocialDomainOut,
     StatusOut,
     ToggleRequest,
+    TrafficDayOut,
 )
+from app import traffic as traffic_svc
 
 router = APIRouter(prefix="/api", tags=["devices"])
 
@@ -70,13 +73,20 @@ def status(_: Annotated[User, Depends(get_current_user)]) -> StatusOut:
     )
 
 
-def _device_out(device: Device, traffic: dict[str, dict[str, int]] | None = None) -> DeviceOut:
+def _device_out(
+    device: Device,
+    traffic: dict[str, dict[str, int]] | None = None,
+    today_row: TrafficDaily | None = None,
+) -> DeviceOut:
     data = DeviceOut.model_validate(device)
     if traffic:
         stats = traffic.get(device.mac.upper()) or traffic.get(mikrotik.normalize_mac(device.mac))
         if stats:
             data.traffic_upload_bytes = stats.get("upload_bytes", 0)
             data.traffic_download_bytes = stats.get("download_bytes", 0)
+    if today_row is not None:
+        data.traffic_today_upload_bytes = int(today_row.upload_bytes or 0)
+        data.traffic_today_download_bytes = int(today_row.download_bytes or 0)
     return data
 
 
@@ -87,9 +97,9 @@ def list_devices(
 ) -> list[DeviceOut]:
     devices = _devices_for_user(user, db)
     traffic: dict[str, dict[str, int]] = {}
+    today_map: dict[int, TrafficDaily] = {}
     if mikrotik.is_configured() and devices:
         try:
-            # Ensure accounting exists for older devices (best-effort)
             for d in devices:
                 if not d.mikrotik_queue_id:
                     try:
@@ -99,9 +109,11 @@ def list_devices(
                         pass
             db.commit()
             traffic = mikrotik.get_traffic_by_mac([d.mac for d in devices])
+            today_map = traffic_svc.sync_devices_traffic(db, devices, traffic)
         except Exception:  # noqa: BLE001
             traffic = {}
-    return [_device_out(d, traffic) for d in devices]
+            today_map = {}
+    return [_device_out(d, traffic, today_map.get(d.id)) for d in devices]
 
 
 @router.post("/devices", response_model=DeviceOut, status_code=201)
@@ -199,6 +211,44 @@ def delete_device(
     db.commit()
 
 
+@router.get("/devices/{device_id}/traffic", response_model=DeviceTrafficHistoryOut)
+def device_traffic_history(
+    device_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    days: int = 14,
+) -> DeviceTrafficHistoryOut:
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
+    if not _user_can_access_device(user, device, db):
+        raise HTTPException(status_code=403, detail="Nemáš prístup k tomuto zariadeniu")
+
+    # Refresh today's bucket before returning history
+    if mikrotik.is_configured():
+        try:
+            if not device.mikrotik_queue_id:
+                device.mikrotik_queue_id = mikrotik.ensure_traffic_accounting(device.mac)
+                db.commit()
+            traffic = mikrotik.get_traffic_by_mac([device.mac])
+            traffic_svc.sync_devices_traffic(db, [device], traffic)
+        except Exception:  # noqa: BLE001
+            pass
+
+    rows = traffic_svc.history_for_device(db, device_id, days=min(max(days, 1), 90))
+    return DeviceTrafficHistoryOut(
+        device_id=device_id,
+        days=[
+            TrafficDayOut(
+                day=r.day,
+                upload_bytes=int(r.upload_bytes or 0),
+                download_bytes=int(r.download_bytes or 0),
+            )
+            for r in rows
+        ],
+    )
+
+
 @router.post("/devices/{device_id}/traffic/reset", response_model=DeviceOut)
 def reset_device_traffic(
     device_id: int,
@@ -216,11 +266,18 @@ def reset_device_traffic(
         if not device.mikrotik_queue_id:
             device.mikrotik_queue_id = mikrotik.ensure_traffic_accounting(device.mac)
             db.commit()
+        # Flush pending delta into today, then reset MikroTik counters + snapshot
+        traffic = mikrotik.get_traffic_by_mac([device.mac])
+        today_map = traffic_svc.sync_devices_traffic(db, [device], traffic)
         mikrotik.reset_traffic_counters(device.mac)
+        device.traffic_snap_upload = 0
+        device.traffic_snap_download = 0
+        device.traffic_snap_at = datetime.utcnow()
+        db.commit()
+        traffic = mikrotik.get_traffic_by_mac([device.mac])
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"MikroTik chyba: {exc}") from exc
-    traffic = mikrotik.get_traffic_by_mac([device.mac])
-    return _device_out(device, traffic)
+    return _device_out(device, traffic, today_map.get(device.id))
 
 
 @router.post("/devices/{device_id}/internet", response_model=DeviceOut)

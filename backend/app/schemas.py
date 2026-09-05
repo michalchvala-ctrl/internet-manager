@@ -71,9 +71,22 @@ class DeviceOut(BaseModel):
     mikrotik_filter_id: str | None = None
     traffic_upload_bytes: int | None = None
     traffic_download_bytes: int | None = None
+    traffic_today_upload_bytes: int | None = None
+    traffic_today_download_bytes: int | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class TrafficDayOut(BaseModel):
+    day: str
+    upload_bytes: int
+    download_bytes: int
+
+
+class DeviceTrafficHistoryOut(BaseModel):
+    device_id: int
+    days: list[TrafficDayOut]
 
 
 class ToggleRequest(BaseModel):

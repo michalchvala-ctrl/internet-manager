@@ -6,6 +6,12 @@ export type User = {
   created_at: string;
 };
 
+export type TrafficDay = {
+  day: string;
+  upload_bytes: number;
+  download_bytes: number;
+};
+
 export type Device = {
   id: number;
   name: string;
@@ -23,6 +29,8 @@ export type Device = {
   mikrotik_filter_id?: string | null;
   traffic_upload_bytes?: number | null;
   traffic_download_bytes?: number | null;
+  traffic_today_upload_bytes?: number | null;
+  traffic_today_download_bytes?: number | null;
 };
 
 export type Status = {
@@ -140,4 +148,8 @@ export const api = {
     }),
   resetTraffic: (id: number) =>
     request<Device>(`/api/devices/${id}/traffic/reset`, { method: "POST" }),
+  trafficHistory: (id: number, days = 14) =>
+    request<{ device_id: number; days: TrafficDay[] }>(
+      `/api/devices/${id}/traffic?days=${days}`,
+    ),
 };

@@ -85,9 +85,17 @@ class TrafficDayOut(BaseModel):
     download_bytes: int
 
 
+class TrafficHourOut(BaseModel):
+    hour: int
+    upload_bytes: int
+    download_bytes: int
+
+
 class DeviceTrafficHistoryOut(BaseModel):
     device_id: int
     days: list[TrafficDayOut]
+    hours: list[TrafficHourOut] = []
+    timezone: str = "Europe/Bratislava"
 
 
 class ToggleRequest(BaseModel):
@@ -167,6 +175,5 @@ class StatusOut(BaseModel):
     adguard_configured: bool
     adguard_ok: bool | None
     adguard_error: str | None
-    mikrotik_webfig_url: str | None = None
     social_slow_limit_kbps: int | None = None
     timezone: str | None = None

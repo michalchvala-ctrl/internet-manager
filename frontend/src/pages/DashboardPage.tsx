@@ -6,9 +6,10 @@ import {
   type ScheduleRule,
   type SocialMode,
   type Status,
-  type TrafficDay,
+  type TrafficHistory,
 } from "../api";
 import { useAuth } from "../auth";
+import { TrafficBars } from "../components/TrafficBars";
 
 const CATEGORY_LABEL: Record<string, string> = {
   child: "Dieťa",
@@ -163,7 +164,7 @@ export function DashboardPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState<number | null>(null);
-  const [history, setHistory] = useState<Record<number, TrafficDay[]>>({});
+  const [history, setHistory] = useState<Record<number, TrafficHistory>>({});
   const [historyLoading, setHistoryLoading] = useState<number | null>(null);
   const [schedOpen, setSchedOpen] = useState<number | null>(null);
   const [schedules, setSchedules] = useState<Record<number, ScheduleRule[]>>({});
@@ -203,11 +204,10 @@ export function DashboardPage() {
       return;
     }
     setHistoryOpen(deviceId);
-    if (history[deviceId]) return;
     setHistoryLoading(deviceId);
     try {
       const res = await api.trafficHistory(deviceId, 14);
-      setHistory((prev) => ({ ...prev, [deviceId]: res.days }));
+      setHistory((prev) => ({ ...prev, [deviceId]: res }));
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Chyba histórie");
     } finally {
@@ -403,17 +403,6 @@ export function DashboardPage() {
               ? "OK"
               : "chyba"}
         </div>
-        {status?.mikrotik_webfig_url && (
-          <a
-            className="pill"
-            href={status.mikrotik_webfig_url}
-            target="_blank"
-            rel="noreferrer"
-            title="Tools → Graphing → Queue"
-          >
-            MikroTik grafy
-          </a>
-        )}
       </div>
 
       {(status?.mikrotik_error || status?.adguard_error) && (
@@ -474,7 +463,7 @@ export function DashboardPage() {
                         className="traffic-reset"
                         onClick={() => void openHistory(device.id)}
                       >
-                        {historyOpen === device.id ? "Skryť" : "14 dní"}
+                        {historyOpen === device.id ? "Skryť graf" : "Graf"}
                       </button>
                       <button
                         type="button"
@@ -492,36 +481,29 @@ export function DashboardPage() {
                     </div>
                     {historyOpen === device.id && (
                       <div className="traffic-history">
-                        {historyLoading === device.id ? (
-                          <div className="device-meta">Načítavam…</div>
-                        ) : (history[device.id] ?? []).length === 0 ? (
-                          <div className="device-meta">Zatiaľ žiadne denné dáta</div>
+                        {historyLoading === device.id || !history[device.id] ? (
+                          <div className="device-meta">Načítavam graf…</div>
                         ) : (
-                          <table className="traffic-table">
-                            <thead>
-                              <tr>
-                                <th>Deň</th>
-                                <th>↓</th>
-                                <th>↑</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {(history[device.id] ?? []).map((row) => (
-                                <tr key={row.day}>
-                                  <td>{row.day}</td>
-                                  <td>{formatBytes(row.download_bytes)}</td>
-                                  <td>{formatBytes(row.upload_bytes)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                          <>
+                            <TrafficBars
+                              title="Dnes po hodinách"
+                              emptyHint="Ešte žiadne hodinové dáta – sync každých 5 min. Použi net a obnov."
+                              points={(history[device.id].hours ?? []).map((h) => ({
+                                label: `${String(h.hour).padStart(2, "0")}`,
+                                download: h.download_bytes,
+                                upload: h.upload_bytes,
+                              }))}
+                            />
+                            <TrafficBars
+                              title="Posledných 14 dní"
+                              points={(history[device.id].days ?? []).map((d) => ({
+                                label: d.day.slice(5),
+                                download: d.download_bytes,
+                                upload: d.upload_bytes,
+                              }))}
+                            />
+                          </>
                         )}
-                        <div className="device-meta" style={{ marginTop: 8 }}>
-                          Appka si sama vytvorí mangle + queue podľa MAC. Vo Winboxe:
-                          IP → Firewall → Mangle (`internet-manager-traffic:…`) a Queues →
-                          Simple (`im-traffic-…`). Fasttrack musí mať connection-mark=no-mark
-                          (appka to nastaví).
-                        </div>
                       </div>
                     )}
                     {schedOpen === device.id && (

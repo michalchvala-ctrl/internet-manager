@@ -12,6 +12,19 @@ export type TrafficDay = {
   download_bytes: number;
 };
 
+export type TrafficHour = {
+  hour: number;
+  upload_bytes: number;
+  download_bytes: number;
+};
+
+export type TrafficHistory = {
+  device_id: number;
+  days: TrafficDay[];
+  hours: TrafficHour[];
+  timezone?: string;
+};
+
 export type Device = {
   id: number;
   name: string;
@@ -60,7 +73,6 @@ export type Status = {
   adguard_configured: boolean;
   adguard_ok: boolean | null;
   adguard_error: string | null;
-  mikrotik_webfig_url?: string | null;
   social_slow_limit_kbps?: number | null;
   timezone?: string | null;
 };
@@ -170,9 +182,7 @@ export const api = {
       body: JSON.stringify({ mode }),
     }),
   trafficHistory: (id: number, days = 14) =>
-    request<{ device_id: number; days: TrafficDay[] }>(
-      `/api/devices/${id}/traffic?days=${days}`,
-    ),
+    request<TrafficHistory>(`/api/devices/${id}/traffic?days=${days}`),
   schedules: (deviceId: number) =>
     request<ScheduleRule[]>(`/api/devices/${deviceId}/schedules`),
   createSchedule: (

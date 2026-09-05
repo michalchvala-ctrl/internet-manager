@@ -23,6 +23,7 @@ from app.schemas import (
     StatusOut,
     ToggleRequest,
     TrafficDayOut,
+    TrafficHourOut,
 )
 from app import traffic as traffic_svc
 
@@ -89,7 +90,6 @@ def status(_: Annotated[User, Depends(get_current_user)]) -> StatusOut:
         adguard_configured=ag_cfg,
         adguard_ok=ag_ok,
         adguard_error=None if ag_ok else ag_err,
-        mikrotik_webfig_url=settings.mikrotik_webfig_url or None,
         social_slow_limit_kbps=settings.social_slow_limit_kbps,
         timezone=settings.timezone,
     )
@@ -256,6 +256,17 @@ def device_traffic_history(
             pass
 
     rows = traffic_svc.history_for_device(db, device_id, days=min(max(days, 1), 90))
+    hour_rows = traffic_svc.hours_for_device_day(db, device_id)
+    # Always return 0–23 so the chart has a full day axis
+    by_h = {int(r.hour): r for r in hour_rows}
+    hours = [
+        TrafficHourOut(
+            hour=h,
+            upload_bytes=int(by_h[h].upload_bytes) if h in by_h else 0,
+            download_bytes=int(by_h[h].download_bytes) if h in by_h else 0,
+        )
+        for h in range(24)
+    ]
     return DeviceTrafficHistoryOut(
         device_id=device_id,
         days=[
@@ -266,6 +277,8 @@ def device_traffic_history(
             )
             for r in rows
         ],
+        hours=hours,
+        timezone=get_settings().timezone,
     )
 
 

@@ -58,6 +58,10 @@ class Device(Base):
         back_populates="device",
         cascade="all, delete-orphan",
     )
+    traffic_hours: Mapped[list["TrafficHourly"]] = relationship(
+        back_populates="device",
+        cascade="all, delete-orphan",
+    )
     schedule_rules: Mapped[list["ScheduleRule"]] = relationship(
         back_populates="device",
         cascade="all, delete-orphan",
@@ -99,6 +103,22 @@ class TrafficDaily(Base):
     download_bytes: Mapped[int] = mapped_column(Integer, default=0)
 
     device: Mapped[Device] = relationship(back_populates="traffic_days")
+
+
+class TrafficHourly(Base):
+    """Bytes per device per hour – for in-app day graph (Europe/Bratislava)."""
+
+    __tablename__ = "traffic_hourly"
+    __table_args__ = (UniqueConstraint("device_id", "day", "hour", name="uq_device_day_hour"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    day: Mapped[str] = mapped_column(String(10), index=True)
+    hour: Mapped[int] = mapped_column(Integer)  # 0–23
+    upload_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    download_bytes: Mapped[int] = mapped_column(Integer, default=0)
+
+    device: Mapped[Device] = relationship(back_populates="traffic_hours")
 
 
 class ScheduleRule(Base):

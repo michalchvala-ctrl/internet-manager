@@ -90,6 +90,15 @@ class SocialDomainCreate(BaseModel):
     domain: str = Field(min_length=3, max_length=255)
 
 
+class UserDeviceAccessUpdate(BaseModel):
+    device_ids: list[int] = Field(default_factory=list)
+
+
+class UserDeviceAccessOut(BaseModel):
+    user_id: int
+    device_ids: list[int]
+
+
 class StatusOut(BaseModel):
     mikrotik_configured: bool
     mikrotik_ok: bool | None

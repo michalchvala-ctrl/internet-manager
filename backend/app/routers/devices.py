@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app import adguard, mikrotik
 from app.auth import get_current_admin, get_current_user
 from app.database import get_db
-from app.models import Device, SocialDomain, User
+from app.models import Device, DeviceAccess, SocialDomain, User
 from app.schemas import (
     DeviceCreate,
     DeviceOut,
@@ -26,6 +26,28 @@ def _normalize_mac_or_400(mac: str) -> str:
         return mikrotik.normalize_mac(mac)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _user_can_access_device(user: User, device: Device, db: Session) -> bool:
+    if user.is_admin:
+        return True
+    return (
+        db.query(DeviceAccess)
+        .filter(DeviceAccess.user_id == user.id, DeviceAccess.device_id == device.id)
+        .first()
+        is not None
+    )
+
+
+def _devices_for_user(user: User, db: Session) -> list[Device]:
+    q = db.query(Device).order_by(Device.sort_order, Device.name)
+    if user.is_admin:
+        return q.all()
+    return (
+        q.join(DeviceAccess, DeviceAccess.device_id == Device.id)
+        .filter(DeviceAccess.user_id == user.id)
+        .all()
+    )
 
 
 @router.get("/status", response_model=StatusOut)
@@ -50,10 +72,10 @@ def status(_: Annotated[User, Depends(get_current_user)]) -> StatusOut:
 
 @router.get("/devices", response_model=list[DeviceOut])
 def list_devices(
-    _: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> list[Device]:
-    return db.query(Device).order_by(Device.sort_order, Device.name).all()
+    return _devices_for_user(user, db)
 
 
 @router.post("/devices", response_model=DeviceOut, status_code=201)
@@ -147,12 +169,14 @@ def delete_device(
 def toggle_internet(
     device_id: int,
     body: ToggleRequest,
-    _: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> Device:
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
+    if not _user_can_access_device(user, device, db):
+        raise HTTPException(status_code=403, detail="Nemáš prístup k tomuto zariadeniu")
 
     if not mikrotik.is_configured():
         raise HTTPException(
@@ -182,12 +206,14 @@ def toggle_internet(
 def toggle_social(
     device_id: int,
     body: ToggleRequest,
-    _: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> Device:
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Zariadenie neexistuje")
+    if not _user_can_access_device(user, device, db):
+        raise HTTPException(status_code=403, detail="Nemáš prístup k tomuto zariadeniu")
 
     if not adguard.is_configured():
         raise HTTPException(
@@ -210,7 +236,6 @@ def toggle_social(
             except Exception:  # noqa: BLE001
                 ip = None
         adguard.set_social_blocked(device.mac, body.blocked, domains, ip=ip)
-        # Cut already-open Instagram/YouTube streams (DNS block alone keeps buffers alive)
         if body.blocked and ip and mikrotik.is_configured():
             try:
                 mikrotik.kill_connections_for_ip(ip)

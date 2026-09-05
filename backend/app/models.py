@@ -17,6 +17,10 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     devices: Mapped[list["Device"]] = relationship(back_populates="owner")
+    device_access: Mapped[list["DeviceAccess"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class Device(Base):
@@ -26,27 +30,41 @@ class Device(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
     mac: Mapped[str] = mapped_column(String(17), index=True)
-    address_list: Mapped[str] = mapped_column(String(128))  # MikroTik address-list name
-    category: Mapped[str] = mapped_column(String(32), default="other")  # child|pc|tv|other
+    address_list: Mapped[str] = mapped_column(String(128))
+    category: Mapped[str] = mapped_column(String(32), default="other")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    # Desired / last-known state (synced from MikroTik + AdGuard on toggle)
     internet_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     social_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     internet_blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     social_blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    # Permanent MikroTik /ip/firewall/filter .id – enable/disable instead of recreate
     mikrotik_filter_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     owner: Mapped[User | None] = relationship(back_populates="devices")
+    viewers: Mapped[list["DeviceAccess"]] = relationship(
+        back_populates="device",
+        cascade="all, delete-orphan",
+    )
+
+
+class DeviceAccess(Base):
+    """Which non-admin users can see/control a device."""
+
+    __tablename__ = "device_access"
+    __table_args__ = (UniqueConstraint("user_id", "device_id", name="uq_user_device"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+
+    user: Mapped[User] = relationship(back_populates="device_access")
+    device: Mapped[Device] = relationship(back_populates="viewers")
 
 
 class SocialDomain(Base):
-    """Domains blocked when social mode is ON for a device (via AdGuard or MikroTik)."""
-
     __tablename__ = "social_domains"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

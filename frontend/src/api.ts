@@ -104,6 +104,13 @@ export const api = {
   updateUser: (id: number, data: Partial<{ password: string; is_admin: boolean; is_active: boolean }>) =>
     request<User>(`/api/auth/users/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteUser: (id: number) => request<void>(`/api/auth/users/${id}`, { method: "DELETE" }),
+  getUserDevices: (id: number) =>
+    request<{ user_id: number; device_ids: number[] }>(`/api/auth/users/${id}/devices`),
+  setUserDevices: (id: number, device_ids: number[]) =>
+    request<{ user_id: number; device_ids: number[] }>(`/api/auth/users/${id}/devices`, {
+      method: "PUT",
+      body: JSON.stringify({ device_ids }),
+    }),
 
   status: () => request<Status>("/api/status"),
   devices: () => request<Device[]>("/api/devices"),

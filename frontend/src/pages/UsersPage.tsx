@@ -1,12 +1,15 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { api, type User } from "../api";
+import { api, type Device, type User } from "../api";
 import { useAuth } from "../auth";
 
 export function UsersPage() {
   const { user: me } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [access, setAccess] = useState<Record<number, number[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [savingUser, setSavingUser] = useState<number | null>(null);
   const [form, setForm] = useState({
     username: "",
     password: "",
@@ -15,7 +18,19 @@ export function UsersPage() {
 
   const load = useCallback(async () => {
     try {
-      setUsers(await api.users());
+      const [u, d] = await Promise.all([api.users(), api.devices()]);
+      setUsers(u);
+      setDevices(d);
+      const map: Record<number, number[]> = {};
+      await Promise.all(
+        u
+          .filter((x) => !x.is_admin)
+          .map(async (x) => {
+            const res = await api.getUserDevices(x.id);
+            map[x.id] = res.device_ids;
+          }),
+      );
+      setAccess(map);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Chyba");
     }
@@ -71,6 +86,28 @@ export function UsersPage() {
       alert("Heslo zmenené");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Chyba");
+    }
+  }
+
+  function toggleDevice(userId: number, deviceId: number) {
+    setAccess((prev) => {
+      const cur = new Set(prev[userId] ?? []);
+      if (cur.has(deviceId)) cur.delete(deviceId);
+      else cur.add(deviceId);
+      return { ...prev, [userId]: [...cur] };
+    });
+  }
+
+  async function saveAccess(userId: number) {
+    setSavingUser(userId);
+    setError(null);
+    try {
+      const res = await api.setUserDevices(userId, access[userId] ?? []);
+      setAccess((prev) => ({ ...prev, [userId]: res.device_ids }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Chyba");
+    } finally {
+      setSavingUser(null);
     }
   }
 
@@ -152,6 +189,49 @@ export function UsersPage() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="panel">
+        <h2>Viditeľnosť zariadení</h2>
+        <p className="panel-note">
+          Admin vidí všetko. Bežnému používateľovi zaškrtni zariadenia, ktoré má vidieť a ovládať.
+        </p>
+        {users.filter((u) => !u.is_admin).length === 0 ? (
+          <p className="empty">Zatiaľ žiadni bežní používatelia</p>
+        ) : (
+          users
+            .filter((u) => !u.is_admin)
+            .map((u) => (
+              <div key={u.id} className="access-card">
+                <div className="access-head">
+                  <strong>{u.username}</strong>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    disabled={savingUser === u.id}
+                    onClick={() => void saveAccess(u.id)}
+                  >
+                    {savingUser === u.id ? "Ukladám…" : "Uložiť"}
+                  </button>
+                </div>
+                <div className="access-grid">
+                  {devices.map((d) => {
+                    const checked = (access[u.id] ?? []).includes(d.id);
+                    return (
+                      <label key={d.id} className={`access-chip ${checked ? "on" : ""}`}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleDevice(u.id, d.id)}
+                        />
+                        {d.name}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+        )}
       </div>
     </>
   );

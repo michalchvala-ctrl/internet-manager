@@ -13,8 +13,15 @@ from app.auth import (
     hash_password,
 )
 from app.database import get_db
-from app.models import User
-from app.schemas import Token, UserCreate, UserOut, UserUpdate
+from app.models import Device, DeviceAccess, User
+from app.schemas import (
+    Token,
+    UserCreate,
+    UserDeviceAccessOut,
+    UserDeviceAccessUpdate,
+    UserOut,
+    UserUpdate,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -104,3 +111,51 @@ def delete_user(
         raise HTTPException(status_code=400, detail="Nemôžeš zmazať sám seba")
     db.delete(user)
     db.commit()
+
+
+@router.get("/users/{user_id}/devices", response_model=UserDeviceAccessOut)
+def get_user_devices(
+    user_id: int,
+    _: Annotated[User, Depends(get_current_admin)],
+    db: Annotated[Session, Depends(get_db)],
+) -> UserDeviceAccessOut:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Používateľ neexistuje")
+    ids = [
+        row.device_id
+        for row in db.query(DeviceAccess).filter(DeviceAccess.user_id == user_id).all()
+    ]
+    return UserDeviceAccessOut(user_id=user_id, device_ids=ids)
+
+
+@router.put("/users/{user_id}/devices", response_model=UserDeviceAccessOut)
+def set_user_devices(
+    user_id: int,
+    body: UserDeviceAccessUpdate,
+    _: Annotated[User, Depends(get_current_admin)],
+    db: Annotated[Session, Depends(get_db)],
+) -> UserDeviceAccessOut:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Používateľ neexistuje")
+    if user.is_admin:
+        # Admins always see everything; clear redundant rows
+        db.query(DeviceAccess).filter(DeviceAccess.user_id == user_id).delete()
+        db.commit()
+        return UserDeviceAccessOut(user_id=user_id, device_ids=[])
+
+    wanted = set(body.device_ids)
+    if wanted:
+        existing_devices = {
+            d.id for d in db.query(Device).filter(Device.id.in_(wanted)).all()
+        }
+        missing = wanted - existing_devices
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Neznáme zariadenia: {sorted(missing)}")
+
+    db.query(DeviceAccess).filter(DeviceAccess.user_id == user_id).delete()
+    for device_id in sorted(wanted):
+        db.add(DeviceAccess(user_id=user_id, device_id=device_id))
+    db.commit()
+    return UserDeviceAccessOut(user_id=user_id, device_ids=sorted(wanted))

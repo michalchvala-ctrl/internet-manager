@@ -203,7 +203,13 @@ def toggle_social(
         domains = adguard.DEFAULT_SOCIAL_DOMAINS
 
     try:
-        adguard.set_social_blocked(device.mac, body.blocked, domains)
+        ip = None
+        if mikrotik.is_configured():
+            try:
+                ip = mikrotik.lookup_ip_for_mac(device.mac)
+            except Exception:  # noqa: BLE001
+                ip = None
+        adguard.set_social_blocked(device.mac, body.blocked, domains, ip=ip)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"AdGuard chyba: {exc}") from exc
 

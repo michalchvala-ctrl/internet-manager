@@ -321,6 +321,12 @@ def set_internet_blocked(
     )
 
 
+def lookup_ip_for_mac(mac: str) -> str | None:
+    """Public helper: current IP for MAC from DHCP/ARP."""
+    with mikrotik_api() as api:
+        return _lookup_ip_for_mac(api, mac)
+
+
 def remove_device_rule(rule_id: str | None, list_name: str, mac: str) -> None:
     if not is_configured():
         return

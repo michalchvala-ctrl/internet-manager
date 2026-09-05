@@ -210,6 +210,12 @@ def toggle_social(
             except Exception:  # noqa: BLE001
                 ip = None
         adguard.set_social_blocked(device.mac, body.blocked, domains, ip=ip)
+        # Cut already-open Instagram/YouTube streams (DNS block alone keeps buffers alive)
+        if body.blocked and ip and mikrotik.is_configured():
+            try:
+                mikrotik.kill_connections_for_ip(ip)
+            except Exception:  # noqa: BLE001
+                pass
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"AdGuard chyba: {exc}") from exc
 

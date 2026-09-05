@@ -327,6 +327,12 @@ def lookup_ip_for_mac(mac: str) -> str | None:
         return _lookup_ip_for_mac(api, mac)
 
 
+def kill_connections_for_ip(ip: str) -> int:
+    """Public: drop tracked connections for an IP (instant cut for open streams)."""
+    with mikrotik_api() as api:
+        return _kill_connections_for_ip(api, ip)
+
+
 def remove_device_rule(rule_id: str | None, list_name: str, mac: str) -> None:
     if not is_configured():
         return

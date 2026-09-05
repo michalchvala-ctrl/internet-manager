@@ -150,11 +150,14 @@ def is_mac_in_list(list_name: str, mac: str) -> bool:
 
 def set_internet_blocked(list_name: str, mac: str, blocked: bool) -> None:
     """
-    When blocked=True, ensure MAC is in the address-list (firewall drops that list).
-    When blocked=False, remove MAC from the list.
+    When blocked=True, ensure firewall drop rule exists and MAC is in address-list.
+    When blocked=False, remove MAC from the list (Wi‑Fi/LAN stay up).
     """
     mac = normalize_mac(mac)
     with mikrotik_api() as api:
+        if blocked:
+            _ensure_firewall_drop_rule_on_api(api, list_name)
+
         path = api.path("/ip/firewall/address-list")
         existing = _find_list_entries(api, list_name, mac)
 
@@ -171,22 +174,49 @@ def set_internet_blocked(list_name: str, mac: str, blocked: bool) -> None:
                 path.remove(entry[".id"])
 
 
-def ensure_firewall_drop_rule(list_name: str) -> str:
+def _has_interface_list(api: Any, name: str) -> bool:
+    try:
+        for row in api.path("/interface/list"):
+            if row.get("name") == name:
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+def _ensure_firewall_drop_rule_on_api(api: Any, list_name: str) -> str:
     """
-    Ensure a forward drop rule exists for the address-list.
-    Returns status message. Idempotent.
+    Idempotent: forward drop for src-address-list, ideally only toward WAN
+    so LAN/HA keeps working.
     """
     comment = f"internet-manager-drop:{list_name}"
-    with mikrotik_api() as api:
-        path = api.path("/ip/firewall/filter")
+    path = api.path("/ip/firewall/filter")
+
+    try:
+        existing = list(path.select(".id", "comment").where(comment=comment))
+        if existing:
+            return "rule already exists"
+    except Exception:  # noqa: BLE001
         for row in path:
             if row.get("comment") == comment:
                 return "rule already exists"
 
-        path.add(
-            chain="forward",
-            action="drop",
-            **{"src-address-list": list_name},
-            comment=comment,
-        )
-        return "rule created"
+    params: dict[str, Any] = {
+        "chain": "forward",
+        "action": "drop",
+        "src-address-list": list_name,
+        "comment": comment,
+    }
+    # Prefer WAN-only drop so LAN stays up
+    if _has_interface_list(api, "WAN"):
+        params["out-interface-list"] = "WAN"
+
+    path.add(**params)
+    logger.info("Created MikroTik firewall rule for list=%s params=%s", list_name, params)
+    return "rule created"
+
+
+def ensure_firewall_drop_rule(list_name: str) -> str:
+    """Ensure a forward drop rule exists for the address-list. Idempotent."""
+    with mikrotik_api() as api:
+        return _ensure_firewall_drop_rule_on_api(api, list_name)

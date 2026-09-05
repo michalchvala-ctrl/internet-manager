@@ -83,8 +83,11 @@ def create_device(
     if mikrotik.is_configured():
         try:
             mikrotik.ensure_firewall_drop_rule(device.address_list)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"Zariadenie uložené, ale firewall rule na MikroTiku zlyhalo: {exc}",
+            ) from exc
 
     return device
 

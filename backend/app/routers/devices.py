@@ -270,32 +270,6 @@ def device_traffic_history(
     )
 
 
-@router.post("/devices/{device_id}/traffic/reset", response_model=DeviceOut)
-def reset_device_traffic(
-    device_id: int,
-    user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
-) -> DeviceOut:
-    device = _get_accessible_device(device_id, user, db)
-    if not mikrotik.is_configured():
-        raise HTTPException(status_code=503, detail="MikroTik nie je nakonfigurovaný")
-    try:
-        if not device.mikrotik_queue_id:
-            device.mikrotik_queue_id = mikrotik.ensure_traffic_accounting(device.mac)
-            db.commit()
-        traffic = mikrotik.get_traffic_by_mac([device.mac])
-        today_map = traffic_svc.sync_devices_traffic(db, [device], traffic)
-        mikrotik.reset_traffic_counters(device.mac)
-        device.traffic_snap_upload = 0
-        device.traffic_snap_download = 0
-        device.traffic_snap_at = datetime.utcnow()
-        db.commit()
-        traffic = mikrotik.get_traffic_by_mac([device.mac])
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"MikroTik chyba: {exc}") from exc
-    return _device_out(device, traffic, today_map.get(device.id))
-
-
 @router.post("/devices/{device_id}/internet", response_model=DeviceOut)
 def toggle_internet(
     device_id: int,

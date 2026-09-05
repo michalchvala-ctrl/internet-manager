@@ -169,8 +169,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ mode }),
     }),
-  resetTraffic: (id: number) =>
-    request<Device>(`/api/devices/${id}/traffic/reset`, { method: "POST" }),
   trafficHistory: (id: number, days = 14) =>
     request<{ device_id: number; days: TrafficDay[] }>(
       `/api/devices/${id}/traffic?days=${days}`,

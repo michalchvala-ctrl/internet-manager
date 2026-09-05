@@ -377,7 +377,10 @@ export function DashboardPage() {
                     <h2>{device.name}</h2>
                     <div className="device-meta">{device.mac}</div>
                     <div className="traffic-row">
-                      <span className="traffic-today" title="Dnes (Bratislava)">
+                      <span
+                        className="traffic-today"
+                        title="Od polnoci (Europe/Bratislava) doteraz"
+                      >
                         Dnes ↓ {formatBytes(device.traffic_today_download_bytes)} · ↑{" "}
                         {formatBytes(device.traffic_today_upload_bytes)}
                       </span>
@@ -394,33 +397,6 @@ export function DashboardPage() {
                         onClick={() => void openSchedules(device.id)}
                       >
                         {schedOpen === device.id ? "Skryť čas" : "Rozvrh"}
-                      </button>
-                      <button
-                        type="button"
-                        className="traffic-reset"
-                        disabled={busyId === `${device.id}-traf`}
-                        onClick={() => {
-                          const key = `${device.id}-traf`;
-                          setBusyId(key);
-                          void api
-                            .resetTraffic(device.id)
-                            .then((updated) => {
-                              setDevices((list) =>
-                                list.map((d) => (d.id === updated.id ? { ...d, ...updated } : d)),
-                              );
-                              setHistory((prev) => {
-                                const copy = { ...prev };
-                                delete copy[device.id];
-                                return copy;
-                              });
-                            })
-                            .catch((err) =>
-                              showToast(err instanceof Error ? err.message : "Chyba"),
-                            )
-                            .finally(() => setBusyId(null));
-                        }}
-                      >
-                        Reset queue
                       </button>
                     </div>
                     {historyOpen === device.id && (
@@ -450,8 +426,8 @@ export function DashboardPage() {
                           </table>
                         )}
                         <div className="device-meta" style={{ marginTop: 8 }}>
-                          Celodenný graf podľa MAC: Winbox → Tools → Graphing → Queue
-                          (queue <code>im-traffic-…</code>). Appka ukladá denné MB do SQLite.
+                          Denne od polnoci do polnoci (Bratislava). „Dnes“ = od polnoci
+                          doteraz. Graf v Winboxe: Tools → Graphing → Queue.
                         </div>
                       </div>
                     )}

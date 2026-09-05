@@ -1,4 +1,4 @@
-"""Background weekly schedules – runs inside Docker even when the PWA is closed."""
+"""Background weekly schedules + traffic sync – runs inside Docker even when the PWA is closed."""
 
 from __future__ import annotations
 
@@ -8,10 +8,12 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app import mikrotik
+from app import traffic as traffic_svc
 from app.actions import apply_schedule_action
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import ScheduleRule
+from app.models import Device, ScheduleRule
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +75,44 @@ def _tick() -> None:
         db.close()
 
 
+def _sync_traffic() -> None:
+    """Pull MikroTik queue counters into midnight–midnight daily buckets (Bratislava)."""
+    if not mikrotik.is_configured():
+        return
+    db = SessionLocal()
+    try:
+        devices = db.query(Device).all()
+        if not devices:
+            return
+        for d in devices:
+            if not d.mikrotik_queue_id:
+                try:
+                    d.mikrotik_queue_id = mikrotik.ensure_traffic_accounting(d.mac)
+                except Exception:  # noqa: BLE001
+                    logger.warning("Traffic queue ensure failed for %s", d.mac, exc_info=True)
+        db.commit()
+        traffic = mikrotik.get_traffic_by_mac([d.mac for d in devices])
+        traffic_svc.sync_devices_traffic(db, devices, traffic)
+    except Exception:  # noqa: BLE001
+        logger.exception("Background traffic sync failed")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def start_scheduler() -> None:
     global _scheduler
     if _scheduler is not None:
         return
     _scheduler = BackgroundScheduler(timezone=get_settings().timezone)
     _scheduler.add_job(_tick, "cron", second=5, id="schedule-tick", replace_existing=True)
+    _scheduler.add_job(
+        _sync_traffic,
+        "interval",
+        minutes=5,
+        id="traffic-sync",
+        replace_existing=True,
+    )
     _scheduler.start()
     logger.info("APScheduler started (timezone=%s)", get_settings().timezone)
 
